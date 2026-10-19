@@ -1,0 +1,1164 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carnet · Clinique du Pont</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@400;500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+  :root{
+    --papier:#FEFDFB; --bureau:#EDEFF3; --carte:#FFFFFF; --grille:#DEE4EC; --grille-forte:#C8D3E0;
+    --encre:#16243B; --encre-douce:#4B5B73; --encre-pale:#7C8AA0;
+    --bleu:#2B5CA8; --bleu-pale:#E8EFF9; --rouge:#B4322A; --rouge-pale:#FBEDEB;
+    --vert:#2F6B4F; --vert-pale:#E9F2ED; --jaune:#F6E7A8;
+    --slab:"Zilla Slab",Georgia,serif; --sans:"Source Sans 3",-apple-system,Segoe UI,Helvetica,Arial,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+    --rail:340px;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --papier:#182029; --bureau:#0E131A; --carte:#1F2833; --grille:#1C2531; --grille-forte:#2E3B4C;
+    --encre:#E6ECF4; --encre-douce:#AFBDD0; --encre-pale:#7F8EA4;
+    --bleu:#7FA9E8; --bleu-pale:#1B2A44; --rouge:#E4857C; --rouge-pale:#33211F;
+    --vert:#7FC29B; --vert-pale:#18291F; --jaune:#4A4021;}}
+  :root[data-theme="dark"]{--papier:#182029;--bureau:#0E131A;--carte:#1F2833;--grille:#1C2531;--grille-forte:#2E3B4C;--encre:#E6ECF4;--encre-douce:#AFBDD0;--encre-pale:#7F8EA4;--bleu:#7FA9E8;--bleu-pale:#1B2A44;--rouge:#E4857C;--rouge-pale:#33211F;--vert:#7FC29B;--vert-pale:#18291F;--jaune:#4A4021;}
+  *{box-sizing:border-box}
+  .carnet,.carnet-haut{
+    container-type:inline-size; container-name:carnet;
+    color:var(--encre); font-family:var(--sans); font-size:16.5px; line-height:1.6;
+    background-color:var(--bureau);
+    background-image:linear-gradient(var(--grille) 1px,transparent 1px),linear-gradient(90deg,var(--grille) 1px,transparent 1px);
+    background-size:26px 26px; background-position:-1px -1px;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* ---------- en-tête ---------- */
+  .tete{position:sticky;top:0;z-index:40;background:var(--bureau);border-bottom:2px solid var(--encre)}
+  .tete-in{max-width:1340px;margin:0 auto;padding:9px 20px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .marque{font-family:var(--slab);font-weight:700;font-size:18px;letter-spacing:-.01em;margin-right:auto;display:flex;align-items:center;gap:9px}
+  .marque i{display:block;width:15px;height:15px;background:var(--rouge);border-radius:2px;transform:rotate(-8deg)}
+  .onglet{font:inherit;font-family:var(--slab);font-size:14.5px;font-weight:600;padding:5px 12px 6px;border:1.5px solid var(--grille-forte);border-bottom:none;border-radius:5px 5px 0 0;background:var(--carte);color:var(--encre-douce);cursor:pointer;position:relative;top:2px}
+  .onglet[aria-current="true"]{background:var(--encre);border-color:var(--encre);color:var(--papier)}
+  .onglet.mini{font-family:var(--mono);font-size:11px;font-weight:400;letter-spacing:.04em;text-transform:uppercase;border-radius:5px;top:0;border-bottom:1.5px solid var(--grille-forte)}
+  .sauve{width:100%;font-family:var(--mono);font-size:10.5px;color:var(--encre-pale);letter-spacing:.03em}
+  /* ---------- mise en page ---------- */
+  .page{max-width:1340px;margin:0 auto;padding:22px 20px 60px;display:grid;grid-template-columns:minmax(0,1fr);gap:24px}
+  html.rail-ouvert .page{grid-template-columns:minmax(0,1fr) var(--rail)}
+  /* La grille reste sur le sous-main. Le texte, lui, est pose sur une feuille pleine :
+     c'est la marge rouge et le papier qui portent l'identite du carnet, pas des lignes
+     qui passeraient sous chaque phrase. */
+  .colonne{max-width:980px;width:100%;background:var(--papier);border:1.5px solid var(--grille-forte);
+    padding:34px 38px 46px 52px;position:relative;box-shadow:0 2px 0 rgba(22,36,59,.06)}
+  .colonne::before{content:"";position:absolute;left:30px;top:0;bottom:0;width:1.5px;background:var(--rouge);opacity:.28}
+  @container carnet (max-width:620px){.colonne{padding:22px 18px 34px 26px}.colonne::before{left:14px}}
+  .jour{display:block;padding:26px 0 70px}
+  html.interactif .jour{display:none}
+  html.interactif .jour.actif{display:block}
+  /* Les commandes qui n’ont de sens qu’avec le script ne s’affichent qu’avec lui. */
+  .onglet,.poignee{display:none}
+  html.interactif .onglet{display:inline-block}
+  /* ---------- typographie ---------- */
+  h1{font-family:var(--slab);font-weight:700;font-size:clamp(31px,5.2vw,44px);line-height:1.06;letter-spacing:-.02em;margin:0 0 8px}
+  h2{font-family:var(--slab);font-weight:600;font-size:25px;line-height:1.2;margin:30px 0 10px}
+  h3{font-family:var(--slab);font-weight:600;font-size:18px;margin:22px 0 7px}
+  p{margin:0 0 14px;max-width:80ch}
+  ul,ol{margin:0 0 14px;padding-left:21px;max-width:80ch}li{margin-bottom:6px}
+  li::marker{color:var(--bleu)}
+  code{font-family:var(--mono);font-size:.84em;background:var(--bleu-pale);color:var(--bleu);padding:1.5px 5px;border-radius:3px;white-space:nowrap}
+  strong{font-weight:700}
+  .chapeau{font-size:19px;line-height:1.5;color:var(--encre-douce);max-width:70ch;margin:0 0 4px}
+  /* ---------- rubans de jour ---------- */
+  .ruban{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11px;letter-spacing:.11em;text-transform:uppercase;color:var(--papier);background:var(--encre);padding:5px 12px;border-radius:3px;margin-bottom:14px}
+  .ruban.maison{background:var(--rouge)}
+  .ruban.presente{background:var(--vert)}
+  /* ---------- blocs ---------- */
+  .bloc{margin:30px 0 0;position:relative}
+  .bloc-tete{display:flex;align-items:baseline;gap:10px;border-bottom:2px solid var(--encre);padding-bottom:5px;margin-bottom:14px}
+  .bloc-num{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--rouge)}
+  .bloc-titre{font-family:var(--slab);font-weight:700;font-size:17px;letter-spacing:.01em;margin:0}
+  .bloc-min{font-family:var(--mono);font-size:11px;color:var(--encre-pale);margin-left:auto}
+  /* ---------- briefing ---------- */
+  .brief{background:var(--carte);border:1.5px solid var(--grille-forte);border-left:5px solid var(--bleu);padding:18px 20px;margin:0 0 6px}
+  .brief h3{margin-top:0;color:var(--bleu)}
+  .brief .sortie{margin:12px 0 0;padding-top:12px;border-top:1px dashed var(--grille-forte)}
+  .brief .sortie strong{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--encre-pale);display:block;margin-bottom:4px}
+  /* ---------- annotations ---------- */
+  .note-rouge{border-left:4px solid var(--rouge);background:var(--rouge-pale);padding:13px 16px;margin:16px 0}
+  .note-rouge p{margin:0;max-width:none}.note-rouge p+p{margin-top:8px}
+  .note-verte{border-left:4px solid var(--vert);background:var(--vert-pale);padding:13px 16px;margin:16px 0}
+  .note-verte p{margin:0;max-width:none}.note-verte p+p{margin-top:8px}
+  .surligne{background:linear-gradient(transparent 58%,var(--jaune) 58%);padding:0 2px}
+  /* ---------- tableaux ---------- */
+  .defile{overflow-x:auto;margin:16px 0;border:1.5px solid var(--grille-forte);background:var(--carte)}
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--grille);vertical-align:top}
+  thead th{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--papier);background:var(--encre);font-weight:400;border-bottom:none;white-space:nowrap}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:nth-child(even){background:color-mix(in srgb,var(--bleu-pale) 45%,transparent)}
+  td.n,th.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+  /* ---------- saisie ---------- */
+  label{display:grid;gap:4px;font-size:13px;font-weight:600;color:var(--encre-douce)}
+  input,select,textarea{width:100%;font:inherit;font-size:15px;color:var(--encre);background:var(--carte);border:1.5px solid var(--grille-forte);border-radius:4px;padding:7px 9px}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--bleu);outline-offset:1px;border-color:var(--bleu)}
+  textarea{min-height:74px;resize:vertical;line-height:1.5;font-size:15px}
+  td input,td select{padding:5px 7px;font-size:14px}
+  .btn{font:inherit;font-family:var(--slab);font-size:15px;font-weight:600;padding:8px 16px;border-radius:4px;border:1.5px solid var(--encre);background:var(--encre);color:var(--papier);cursor:pointer}
+  .btn.creux{background:transparent;color:var(--encre)}
+  .btn:hover{opacity:.88}
+  /* ---------- étapes ---------- */
+  .etapes{counter-reset:e;list-style:none;padding:0;margin:14px 0}
+  .etapes>li{counter-increment:e;position:relative;padding-left:40px;margin-bottom:18px}
+  .etapes>li::before{content:counter(e);position:absolute;left:0;top:-1px;width:27px;height:27px;border-radius:4px;background:var(--bleu);color:#fff;font-family:var(--mono);font-size:13px;font-weight:700;display:grid;place-items:center}
+  /* ---------- verrou ---------- */
+  .verrou{border:2px dashed var(--grille-forte);padding:16px;margin:14px 0;background:var(--carte)}
+  .verrou-l{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  .verrou-l label{flex:0 0 165px}
+  .reponse{margin-top:14px;padding-top:14px;border-top:2px solid var(--vert)}
+  /* ---------- boucle ---------- */
+  .boucle{display:block;width:100%;height:auto;margin:16px 0;background:var(--carte);border:1.5px solid var(--grille-forte)}
+  .boucle text{font-family:var(--sans);font-size:11px;fill:var(--encre)}
+  .boucle .num{font-family:var(--mono);font-size:13px;font-weight:700;fill:var(--rouge)}
+  /* ---------- le rail des calculatrices ---------- */
+  .poignee{position:fixed;right:0;top:46%;z-index:50;transform:translateY(-50%);writing-mode:vertical-rl;font-family:var(--slab);font-weight:700;font-size:15px;letter-spacing:.04em;padding:16px 9px;border:2px solid var(--encre);border-right:none;border-radius:7px 0 0 7px;background:var(--rouge);color:#fff;cursor:pointer}
+  html.interactif .poignee{display:block}
+  html.interactif.rail-ouvert .poignee{display:none}
+  .rail{display:block;padding:16px 0 40px}
+  html.interactif .rail{display:none;position:sticky;top:64px;align-self:start;max-height:calc(100dvh - 78px);overflow-y:auto;overscroll-behavior:contain;padding:16px 0 40px}
+  html.interactif.rail-ouvert .rail{display:block}
+  html.interactif .rail-tete{position:sticky;top:0;background:var(--bureau);z-index:2;padding-top:2px}
+  .rail-tete{display:flex;align-items:center;gap:8px;border-bottom:2px solid var(--encre);padding-bottom:7px;margin-bottom:12px}
+  .rail-tete h2{font-size:19px;margin:0;margin-right:auto}
+  .calc>summary{list-style:none}
+  .calc:not([open])>*:not(summary){display:none}
+  html:not(.interactif) .calc>*{display:block!important}
+  .calc{background:var(--carte);border:1.5px solid var(--grille-forte);border-top:4px solid var(--bleu);padding:13px 14px;margin-bottom:12px}
+  .calc>summary{list-style:none;cursor:pointer;display:flex;flex-direction:column;gap:0}
+  .calc>summary::-webkit-details-marker{display:none}
+  .calc>summary::after{content:"+";position:absolute;right:14px;top:11px;font-family:var(--mono);color:var(--bleu);font-weight:700}
+  .calc{position:relative}
+  .calc[open]>summary::after{content:"−"}
+  .calc>summary{align-items:flex-start}
+  .calc .form{font-family:var(--mono);font-size:11.5px;color:var(--encre-douce);background:var(--bleu-pale);padding:7px 9px;margin:10px 0 8px;border-radius:3px;line-height:1.45}
+  .calc .champs{display:grid;gap:9px;margin-bottom:10px}
+  .calc output{display:block;background:var(--encre);color:var(--papier);padding:11px 13px;min-height:44px;font-size:14px;border-radius:3px}
+  .calc output .gros{display:block;font-family:var(--slab);font-size:21px;font-weight:700;line-height:1.2;margin-bottom:3px}
+  .calc .pq{font-size:13px;color:var(--encre-douce);margin:9px 0 0;max-width:none}
+  .calc .pq b{color:var(--encre);font-weight:700}
+  .report{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--bleu);background:var(--bleu-pale);padding:1px 6px;border-radius:99px;margin-left:5px}
+  .rail-note{font-size:13px;color:var(--encre-pale);margin:4px 0 14px}
+  @container carnet (max-width:1180px){
+    .page{--rail:300px}
+    html.interactif.rail-ouvert .colonne{max-width:none}
+  }
+  @container carnet (max-width:900px){ .page{--rail:272px} }
+  @container carnet (max-width:720px){
+    html.rail-ouvert .page{grid-template-columns:minmax(0,1fr)}
+    html.interactif.rail-ouvert .rail{position:fixed;left:0;right:0;bottom:0;top:auto;width:auto;max-height:min(46vh,420px);overflow-y:auto;background:var(--bureau);border-top:2px solid var(--encre);box-shadow:0 -6px 18px rgba(22,36,59,.18);padding:12px 16px 18px;z-index:45;margin:0}
+    html.interactif.rail-ouvert .page{padding-bottom:calc(min(46vh,420px) + 16px)}
+    html.interactif.rail-ouvert .poignee{display:none}
+  }
+  @container carnet (max-width:620px){.marque{width:100%;margin-bottom:3px}.verrou-l label{flex:1 1 100%}}
+  /* ---------- mode projection ---------- */
+  html.projection{font-size:19px}
+  html.projection .colonne{max-width:900px}
+  html.projection h1{font-size:44px}
+  html.projection .bloc-titre{font-size:26px}
+  html.projection .chapeau{font-size:22px}
+  html.projection input,html.projection textarea,html.projection .verrou,html.projection .sauve{display:none!important}
+  html.projection .defile table{font-size:18px}
+  html.projection .etapes li{font-size:19px}
+  html.projection .bloc{border-width:2px}
+  /* ---------- les concepts nommes ---------- */
+  .outil{border-left:3px solid var(--bleu);background:var(--bleu-pale);padding:14px 18px;margin:18px 0}
+  .outil h3{margin:0 0 6px;font-size:19px;color:var(--bleu)}
+  .outil p{margin:0 0 9px}.outil p:last-child{margin-bottom:0}
+  .outil .def{font-size:16px}
+  .nom-outil{font-family:var(--slab);font-weight:700;font-size:16.5px;display:block;line-height:1.25}
+  .sous-outil{font-size:13.5px;color:var(--encre-douce);display:block;line-height:1.35;margin-top:1px}
+  .exemple-nom{border:1.5px solid var(--grille-forte);border-left:3px solid var(--bleu);background:var(--carte);padding:11px 15px;margin:14px 0;max-width:420px}
+  span.form{display:inline-block;font-family:var(--mono);font-size:12.5px;background:var(--carte);
+    border:1px solid var(--grille-forte);padding:3px 8px;border-radius:3px;margin-top:5px;white-space:normal}
+  /* ---------- la situation du jour ---------- */
+  .drill{border-left:3px solid var(--vert);background:var(--vert-pale);padding:14px 18px;margin:14px 0}
+  .drill h3{margin:0 0 8px;font-size:18px;color:var(--vert)}
+  .drill p{margin:0 0 7px}.drill p:last-child{margin-bottom:0}
+  .situation{border:2px solid var(--encre);background:var(--carte);padding:20px 22px;margin:18px 0}
+  .situation h3{margin:0 0 10px;font-size:21px}
+  .situation blockquote{margin:14px 0;padding:12px 16px;background:var(--jaune);border:0;
+    font-family:var(--slab);font-size:17px;line-height:1.45;font-style:italic}
+  .situation .consigne{font-family:var(--mono);font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--encre-pale);margin:16px 0 8px}
+  .situation ol{padding-left:19px}.situation ol li{margin-bottom:9px}
+  /* ---------- ce que l'equipe depose ---------- */
+  .depot{border:1.5px dashed var(--vert);background:var(--vert-pale);padding:16px 20px;margin:18px 0}
+  .depot h3{margin:0 0 8px;font-size:18px;color:var(--vert)}
+  .depot p:last-child,.depot ol:last-child,.depot ul:last-child{margin-bottom:0}
+  .depot .consigne{font-size:14px;color:var(--encre-douce);font-style:italic}
+  .jour-tag{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--encre-pale);margin-left:6px}
+  /* ---------- la lettre de vendredi ---------- */
+  .lettre{background:var(--carte);border:1.5px solid var(--grille-forte);border-left:3px solid var(--rouge);padding:22px 26px;margin:18px 0}
+  .lettre h3{margin:0 0 14px;font-size:19px;color:var(--rouge)}
+  .lettre p{font-size:16px}
+  .lettre .signature{font-family:var(--slab);font-style:italic;color:var(--encre-douce);margin-bottom:0}
+  .terme{font-weight:700;color:var(--bleu);white-space:nowrap}
+  .def-courte{color:var(--encre-douce);font-size:.94em}
+  .def-courte::before{content:"— "}
+  td.ou{color:var(--encre-douce);font-size:.9em}
+  .boucle .num{font-family:var(--mono);font-size:13px;font-weight:700;fill:var(--rouge)}
+  .chemin{font-family:var(--mono);font-size:12.5px;background:var(--bleu-pale);color:var(--bleu);padding:2px 7px;border-radius:3px;display:inline-block;line-height:1.5}
+  .chemin code{background:none;padding:0;color:inherit}
+  .vers-rail{font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--encre-douce);
+    border-top:1.5px solid var(--grille-forte);padding-top:10px;margin-top:18px}
+  .vers-rail strong{font-family:var(--sans);color:var(--encre)}
+  td.en,.en{font-style:italic;color:var(--encre-douce)}
+  .btn.gros{font-size:17px;padding:11px 22px}
+  @media print{
+    .carnet{background:#fff;background-image:none}.colonne{border:0;box-shadow:none;padding:0}.colonne::before{display:none}.tete,.poignee,.verrou{display:none!important}.rail{display:block!important;position:static!important;height:auto!important;max-height:none!important;width:auto!important;border:0;padding:0;break-before:page}.rail input,.rail button,.rail output,.rail .calc-sortie{display:none!important}.rail .calc>*{display:block!important}
+    .jour{display:block!important;break-before:page}.jour:first-of-type{break-before:auto}
+    .defile,.calc{background:#fff}
+  }
+
+  /* Repli : sans requetes de conteneur, on retombe sur la fenetre. Moins juste dans un LMS,
+     mais jamais pire qu'avant. */
+  @supports not (container-type: inline-size){
+    @media(max-width:1180px){ .page{--rail:300px} html.interactif.rail-ouvert .colonne{max-width:none} }
+    @media(max-width:900px){ .page{--rail:272px} }
+    @media(max-width:720px){
+      html.rail-ouvert .page{grid-template-columns:minmax(0,1fr)}
+      html.interactif.rail-ouvert .rail{position:fixed;left:0;right:0;bottom:0;top:auto;width:auto;max-height:min(46vh,420px);overflow-y:auto;background:var(--bureau);border-top:2px solid var(--encre);box-shadow:0 -6px 18px rgba(22,36,59,.18);padding:12px 16px 18px;z-index:45;margin:0}
+      html.interactif.rail-ouvert .page{padding-bottom:calc(min(46vh,420px) + 16px)}
+    }
+    @media(max-width:620px){.colonne{padding:22px 18px 34px 26px}.colonne::before{left:14px}.marque{width:100%;margin-bottom:3px}.verrou-l label{flex:1 1 100%}}
+  }
+  /* ---------- refonte : la méthode, la carte, les activités ---------- */
+  .cycle{list-style:none;display:flex;flex-wrap:wrap;gap:4px;padding:0;margin:14px 0 18px;max-width:none;counter-reset:geste}
+  .cycle li{counter-increment:geste;margin:0;font-family:var(--slab);font-weight:600;font-size:14px;padding:4px 10px 5px;border:1.5px solid var(--grille-forte);border-radius:4px;background:var(--carte);color:var(--encre-douce)}
+  .cycle li::before{content:counter(geste) " · ";font-family:var(--mono);font-size:11px;color:var(--encre-pale)}
+  .cycle li.ici{background:var(--encre);border-color:var(--encre);color:var(--papier)}
+  .cycle li.ici::before{color:var(--papier)}
+  .horaire td:first-child,.horaire th:first-child{font-family:var(--mono);font-size:13px;white-space:nowrap}
+  .horaire tr.pause td{color:var(--encre-pale);font-style:italic}
+  .bloc-heure{font-family:var(--mono);font-size:11px;color:var(--papier);background:var(--bleu);padding:1px 6px;border-radius:3px}
+  .activite .objectif{font-size:17px;border-left:4px solid var(--bleu);padding-left:12px}
+  .activite .objectif strong:first-child,.activite .fini strong:first-child,.activite .bloque strong:first-child{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--encre-pale);font-weight:400}
+  .etapes{counter-reset:etape;list-style:none;padding-left:0}
+  .etapes>li{counter-increment:etape;position:relative;padding-left:34px;margin-bottom:9px}
+  .etapes>li::before{content:counter(etape);position:absolute;left:0;top:1px;width:23px;height:23px;border-radius:50%;background:var(--bleu-pale);color:var(--bleu);font-family:var(--mono);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .fini{background:var(--vert-pale);border:1.5px solid var(--vert);border-radius:4px;padding:10px 14px;margin:16px 0 10px}
+  .bloque{background:var(--carte);border:1.5px dashed var(--grille-forte);border-radius:4px;padding:10px 14px;margin:0 0 10px;font-size:15.5px}
+  .voir-jeu{background:var(--bleu-pale);border-radius:4px;padding:10px 14px;margin:10px 0 14px}
+  .voir-jeu strong:first-child{color:var(--bleu)}
+  .dossier-jour{background:var(--carte);border:1.5px solid var(--grille-forte);border-top:4px solid var(--encre);padding:14px 18px;margin:18px 0 6px}
+  .dossier-jour h3{margin-top:0}
+  .dossier-jour ol{margin-bottom:0}
+  .carte-svg{display:block;width:100%;max-width:640px;height:auto;margin:10px 0 16px}
+  .carte-svg .noeud rect{fill:var(--carte);stroke:var(--encre);stroke-width:1.5}
+  .carte-svg .noeud text{fill:var(--encre);font-family:var(--slab);font-weight:600;font-size:15px;text-anchor:middle;dominant-baseline:central}
+  .carte-svg .fleche{stroke:var(--encre-douce);stroke-width:1.6;fill:none;marker-end:url(#pointe)}
+  .carte-svg #pointe path{fill:var(--encre-douce)}
+  .carte-svg .lettre{font-family:var(--mono);font-weight:700;font-size:14px;text-anchor:middle;dominant-baseline:central}
+  .carte-svg .lettre.s{fill:var(--vert)}
+  .carte-svg .lettre.o{fill:var(--rouge)}
+  .carte-svg .pastille{fill:var(--papier);stroke:var(--grille-forte)}
+  .equipes td:first-child{font-family:var(--slab);font-weight:700;white-space:nowrap}
+  .concept{background:var(--carte);border:1.5px solid var(--grille-forte);border-left:5px solid var(--encre);padding:12px 16px;margin:0 0 12px}
+  .concept h3{margin:0 0 4px}
+  .concept p{margin-bottom:8px}
+  .concept p:last-child{margin-bottom:0}
+  .avant-demain{background:var(--rouge-pale);border:1.5px solid var(--rouge);border-radius:4px;padding:12px 16px;margin:20px 0 6px}
+  .avant-demain h3{margin-top:0;color:var(--rouge)}
+  .rail .sur-carte{font-size:13.5px;color:var(--encre-douce);border-left:3px solid var(--bleu);padding-left:8px;margin:8px 0}
+  .defile code,.voir-jeu code,.etapes code{white-space:normal}
+  .onglet.mini.onglet-calculs{background:var(--rouge);border-color:var(--rouge);color:#fff;font-weight:700}
+  .onglet.mini.onglet-calculs[aria-pressed="true"]{background:var(--encre);border-color:var(--encre)}
+  .permis{background:var(--vert-pale);border:1.5px solid var(--vert);border-radius:4px;padding:12px 16px;margin:16px 0 6px}
+  .permis h3{margin-top:0;color:var(--vert)}
+  .permis p:last-child{margin-bottom:0}
+  tr.groupe th{background:var(--encre);color:var(--papier);font-family:var(--slab);font-size:14px;text-align:left;padding:6px 10px}
+</style>
+</head>
+<body>
+<div class="carnet-haut"><header class="tete"><div class="tete-in">
+  <span class="marque"><i></i>Carnet · Clinique du Pont</span>
+  <button class="onglet" data-aller="accueil">Pourquoi</button>
+  <button class="onglet" data-aller="lundi">Lundi</button>
+  <button class="onglet" data-aller="mardi">Mardi</button>
+  <button class="onglet" data-aller="mercredi">Mercredi</button>
+  <button class="onglet" data-aller="jeudi">Jeudi</button>
+  <button class="onglet" data-aller="vendredi">Vendredi</button>
+  <button class="onglet mini onglet-calculs" data-rail-bascule aria-pressed="false">Calculs</button>
+  <button class="onglet mini" data-aller="reference">Référence</button>
+  <button class="onglet mini" data-projection>Projection</button>
+</div></header></div>
+<button class="poignee" data-rail>Les calculs ▸</button>
+
+<div class="carnet"><div class="page">
+<main>
+<section class="jour" id="accueil"><div class="colonne"><span class="ruban">Avant de commencer · lisez ceci</span><h1>Pourquoi cette semaine existe</h1><p class="chapeau">Dans trois ans, quelqu’un vous demandera si la clinique doit acheter un échographe. Vous serez le vétérinaire dans la pièce. Cette semaine sert à ce que vous ne soyez pas muet ce jour-là.</p>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">01</span><h2 class="bloc-titre">Ce que vous saurez faire vendredi</h2></div>
+<p>La plupart des vétérinaires sortent de formation en sachant soigner et sans savoir lire une clinique. Des décisions à 30 000 € se prennent alors à l’intuition, ou se laissent prendre par quelqu’un d’autre. Cette semaine vous apprend trois choses.</p>
+<ol>
+<li><strong>Organiser votre pensée.</strong> Une clinique est faite de causes et d’effets : les prix agissent sur les demandes, les demandes sur les cas traités, la fatigue de l’équipe sur les absences. Vous apprendrez à les dessiner — c’est une carte — pour voir où agit une décision.</li>
+<li><strong>Vous servir de l’économie comme d’un outil.</strong> Chaque calcul de la semaine répond à une question qu’une flèche de votre carte pose. On ne calcule jamais pour calculer.</li>
+<li><strong>L’appliquer à un cas.</strong> Faire une proposition que quelqu’un d’autre peut vérifier : avec vos chiffres, comparée à ce qui se passerait sans elle, en disant de quel point de vue vous la regardez et ce qu’elle laisse de côté.</li>
+</ol>
+<p>Aucune notion d’économie ni de gestion n’est supposée. Chaque mot nouveau est expliqué là où il apparaît, et il se retrouve dans la page <strong>Référence</strong>.</p></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">02</span><h2 class="bloc-titre">La proposition à laquelle vous répondrez vendredi</h2></div>
+<p>Vous la lisez maintenant pour savoir où vous allez. Vous n’y répondez pas aujourd’hui : chaque journée vous en donne une partie.</p>
+<div class="lettre"><h3>Lettre de la D<sup>re</sup> Sofia Neri</h3><p>Madame, Monsieur,</p><p>Je suis vétérinaire spécialisée en imagerie et j’exerce depuis onze ans dans la région. Je cherche une clinique prête à développer une activité d’échographie, et la vôtre est bien située pour cela.</p><p>Ce que je propose est simple pour la partie matérielle : vous aménagez une salle d’imagerie et vous vous équipez d’un échographe. Reste la compétence, et là vous avez deux chemins — à vous de dire lequel.</p>
+<ul><li><strong>Soit vous formez votre propre vétérinaire</strong>, et je n’entre pas dans la clinique.</li><li><strong>Soit vous m’engagez</strong> : j’arrive avec la compétence, et je prends aussi des consultations. Je ne vous cacherai pas que le second chemin ajoute un salaire, chaque année, et pas seulement la première.</li></ul>
+<p>Les ordres de grandeur, que vous pourrez vérifier vous-mêmes : la salle revient à <strong>5 200 €</strong>, puis <strong>5 200 € de loyer par an</strong>. L’échographe coûte <strong>21 000 € à l’achat</strong> ou <strong>12 000 € par an en location</strong>. Former votre vétérinaire à l’échographie coûte <strong>4 200 €</strong> et <strong>56 heures</strong>, une seule fois. M’engager coûte <strong>68 000 € de salaire par an</strong>, plus 500 € de frais d’annonce — chaque année, pas une fois. Votre banque propose <strong>30 000 € sur cinq ans, à 6 %</strong>.</p><p>Je ne vous demande pas une réponse immédiate. Je vous demande une réponse argumentée.</p><p class="signature">D<sup>re</sup> Sofia Neri · vétérinaire, imagerie</p></div></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">03</span><h2 class="bloc-titre">La méthode : sept gestes</h2></div>
+<p>Chaque jour, vous traitez une situation avec les mêmes sept gestes, dans le même ordre. Lundi, chaque geste est détaillé. Ensuite, de moins en moins : vendredi, vous les enchaînez seuls.</p>
+<ol class="cycle"><li>Décrire</li><li>Situer</li><li>Expliquer</li><li>Chiffrer</li><li>Comparer</li><li>Cadrer</li><li>Proposer</li></ol>
+<div class="defile"><table><thead><tr><th>Geste</th><th>Ce que vous faites</th></tr></thead><tbody>
+<tr><td><strong>Décrire</strong></td><td>Relever les chiffres de votre clinique, chacun avec l’écran d’où il sort.</td></tr>
+<tr><td><strong>Situer</strong></td><td>Montrer sur votre carte où se trouve le problème, ou sur quelle flèche agit la décision.</td></tr>
+<tr><td><strong>Expliquer</strong></td><td>Proposer une cause, en la séparant de ce que vous avez observé, et dire ce qui la confirmerait ou la contredirait.</td></tr>
+<tr><td><strong>Chiffrer</strong></td><td>Prendre le calcul qui répond à la question de cette flèche, et l’appeler par son nom.</td></tr>
+<tr><td><strong>Comparer</strong></td><td>Mettre l’année <em>avec</em> la décision à côté de l’année <em>sans</em> elle. Seul l’écart compte.</td></tr>
+<tr><td><strong>Cadrer</strong></td><td>Dire de quel point de vue vous jugez, et ce que votre carte laisse dehors.</td></tr>
+<tr><td><strong>Proposer</strong></td><td>Quatre lignes : l’affirmation, les éléments chiffrés, la condition, le risque.</td></tr>
+</tbody></table></div>
+<p>Puis on <strong>révise</strong> : quand de nouveaux chiffres arrivent, la proposition de la veille se corrige. Elle ne se réécrit pas depuis zéro.</p></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">04</span><h2 class="bloc-titre">La semaine</h2></div>
+<div class="defile"><table class="horaire"><thead><tr><th>Jour</th><th>Où</th><th>La question</th><th>Sur la carte</th></tr></thead><tbody>
+<tr><td>Lundi</td><td>en salle, 9 h – 11 h 30 · années 1 et 2</td><td>Que fait cette clinique, et pourquoi perd-elle de l’argent ?</td><td>la carte de l’argent</td></tr>
+<tr><td>Mardi</td><td>en salle, 9 h – 11 h 30 · années 3 et 4</td><td>Que se passe-t-il quand on pousse sur une variable ?</td><td>vos boucles, puis la grande boucle</td></tr>
+<tr><td>Mercredi</td><td>chez vous, seul, 2 h 30 · années 5 et 6</td><td>Qu’est-ce qui limite vraiment cette clinique ?</td><td>la capacité, ouverte en détail</td></tr>
+<tr><td>Jeudi</td><td>en salle, 9 h – 11 h 30, avec un praticien · aucune année</td><td>Que laisse la carte dehors ?</td><td>le périmètre et les points de vue</td></tr>
+<tr><td>Vendredi</td><td>en salle, 9 h – 11 h 30, présentation · années 7 à 9, deux fois</td><td>Que répondez-vous à la D<sup>re</sup> Neri ?</td><td>toute la carte</td></tr>
+</tbody></table></div></div>
+
+<div class="bloc" id="permis-semaine"><div class="bloc-tete"><span class="bloc-num">05</span><h2 class="bloc-titre">Ce que la clinique peut faire, jour par jour</h2></div>
+<p>La banque refuse tout agrandissement avant vendredi : pas d’embauche, pas de nouvelle salle, pas de nouvel équipement. Vous répondez donc avec ce que la clinique a déjà. Chaque jour ajoute quelques possibilités ; rien de ce qui n’est pas encore permis ne se planifie.</p>
+<div class="defile"><table><thead><tr><th>Jour</th><th>Ce qui devient possible</th><th>Toujours impossible</th></tr></thead><tbody>
+<tr><td>Lundi</td><td>prix · ouvrir ou fermer un service que l’équipe sait déjà assurer, sans rien acheter · répartition des heures, jusqu’à 100 %</td><td>tout le reste</td></tr>
+<tr><td>Mardi</td><td>+ horaires d’ouverture · heures supplémentaires · salaires · stratégie RH · réunion d’équipe · communication client · rythme des services · mesures de durabilité · marché cible (le type de clients visé)</td><td>embaucher, salle, équipement, formation, emprunt, déménagement</td></tr>
+<tr><td>Mercredi</td><td>+ formation</td><td>embaucher, salle, équipement, emprunt, déménagement</td></tr>
+<tr><td>Jeudi</td><td>aucune année ne se joue</td><td>—</td></tr>
+<tr><td>Vendredi</td><td>tout, mais seulement pour tester le projet de la D<sup>re</sup> Neri</td><td>—</td></tr>
+</tbody></table></div></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">06</span><h2 class="bloc-titre">Votre dossier</h2></div>
+<p>Tout ce que vous produisez s’écrit dans <strong>un document partagé par votre équipe</strong> — pas dans ce carnet. Créez-le lundi, avec quatre parties qui ne changent plus de la semaine :</p>
+<ol>
+<li><strong>Carte</strong> — votre dessin de la clinique. Une feuille photographiée suffit ; rien n’est à recopier.</li>
+<li><strong>Journal</strong> — une ligne par année jouée : la décision, ce que vous attendiez, ce qui s’est passé.</li>
+<li><strong>Diagnostic</strong> — ce qui ne va pas, et pourquoi selon vous.</li>
+<li><strong>Proposition</strong> — vos quatre lignes, corrigées chaque jour.</li>
+</ol>
+<p>Chaque jour <em>corrige</em> ces quatre parties au lieu d’en ajouter. Vendredi, vous présentez ce document tel qu’il est devenu.</p>
+<h3>Quatre rôles, qui tournent chaque jour</h3>
+<div class="defile"><table><thead><tr><th>Rôle</th><th>Ce qu’il fait</th></tr></thead><tbody><tr><td><strong>Les chiffres</strong></td><td>Tient les calculs et relit chacun avant qu’il entre dans le dossier.</td></tr><tr><td><strong>Le jeu</strong></td><td>Pilote la clinique : décisions, affectations, passage des années.</td></tr><tr><td><strong>Le dossier</strong></td><td>Écrit. Rien n’y entre sans son chiffre et son écran.</td></tr><tr><td><strong>La parole</strong></td><td>Résume à voix haute où en est l’équipe, et présente vendredi.</td></tr></tbody></table></div>
+<h3>Trois règles</h3>
+<ol><li>Tout chiffre avancé vient avec son calcul et l’écran d’où il sort.</li><li>Un désaccord se tranche en testant dans le jeu, pas en votant.</li><li>Ce que vous n’arrivez pas à expliquer, vous l’écrivez quand même. C’est souvent le plus utile.</li></ol></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">07</span><h2 class="bloc-titre">Trois choses pratiques</h2></div>
+<ul><li><strong>Le même ordinateur toute la semaine.</strong> Le jeu garde votre clinique dans ce navigateur, sur cette machine — et mercredi se fait chez vous. Pour l’emporter ailleurs : <code>Enregistrer la clinique</code>, puis <code>Charger une clinique</code> sur l’autre machine.</li>
+<li><strong>Une seule clinique pour la semaine.</strong> Votre journal la suit année après année : ne recommencez pas la partie. Pour essayer quelque chose sans risque, planifiez-le sans passer l’année — la colonne de droite vous montre l’effet — puis retirez-le.</li>
+<li><strong>Rien n’est noté.</strong> Ni votre travail, ni les résultats financiers de votre clinique. Une clinique qui finit mal avec un raisonnement clair vaut mieux qu’une clinique florissante que personne ne sait expliquer.</li></ul>
+<p><button class="btn" data-aller="lundi">Commencer lundi →</button></p></div>
+</div></section>
+<section class="jour" id="lundi"><div class="colonne"><span class="ruban">Lundi · en salle · 9 h – 11 h 30</span><h1>Lire une clinique</h1><p class="chapeau">La clinique traite 100 % de ce qu’elle propose et perd <strong>64 969 €</strong>. Les deux sont vrais en même temps. Aujourd’hui, vous apprenez à la décrire avec des chiffres, à la dessiner, et à juger une première proposition.</p>
+<ol class="cycle"><li class="ici">Décrire</li><li class="ici">Situer</li><li class="ici">Expliquer</li><li class="ici">Chiffrer</li><li class="ici">Comparer</li><li class="ici">Cadrer</li><li class="ici">Proposer</li></ol>
+<div class="defile"><table class="horaire"><thead><tr><th>Heure</th><th>Ce que vous faites</th></tr></thead><tbody>
+<tr><td>9 h 00</td><td>00 · Ouverture</td></tr><tr><td>9 h 10</td><td>01 · Premier regard</td></tr><tr><td>9 h 20</td><td>02 · La carte de l’argent</td></tr><tr><td>9 h 50</td><td>03 · La proposition de l’associé</td></tr><tr class="pause"><td>10 h 30</td><td>pause</td></tr><tr><td>10 h 40</td><td>04 · Deux années</td></tr><tr><td>11 h 15</td><td>05 · Premier diagnostic</td></tr><tr><td>11 h 30</td><td>fin</td></tr></tbody></table></div>
+<div class="dossier-jour"><h3>Ce soir, votre dossier contient</h3><ol><li><strong>Carte</strong> — la carte de l’argent, avec neuf chiffres.</li><li><strong>Proposition</strong> — votre réponse à l’associé, en quatre lignes.</li><li><strong>Journal</strong> — deux lignes, une par année jouée.</li><li><strong>Diagnostic</strong> — quatre phrases.</li></ol></div>
+<div class="permis"><h3>Permis aujourd’hui</h3><p><strong>Prix · ouvrir ou fermer un service que l’équipe sait déjà assurer</strong> (le jeu l’ouvre sans rien acheter ni apprendre) <strong>· répartition des heures, jusqu’à 100 %</strong>.</p><p><strong>Pas encore</strong> : tout le reste — voir la page <strong>Pourquoi</strong>, bloc 05.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">00</span><h2 class="bloc-titre">Ouverture</h2><span class="bloc-heure">9 h 00</span><span class="bloc-min">10 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Savoir à quoi sert la semaine et comment votre équipe travaille.</p>
+<ol class="etapes"><li>Écoutez la lettre de la D<sup>re</sup> Neri (page <strong>Pourquoi</strong>, bloc 02).</li><li>Créez le document partagé de l’équipe, avec ses quatre parties : Carte, Journal, Diagnostic, Proposition.</li><li>Répartissez les quatre rôles pour aujourd’hui.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> le document existe, chacun peut l’ouvrir, et chacun a un rôle.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">01</span><h2 class="bloc-titre">Premier regard</h2><span class="bloc-heure">9 h 10</span><span class="bloc-min">10 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Repérer où la clinique montre ses chiffres.</p>
+<ol class="etapes"><li>Ouvrez le jeu. Parcourez les six onglets : <code>Vue d’ensemble</code>, <code>Soins et installations</code>, <code>Équipe et opérations</code>, <code>Gestion</code>, <code>Durabilité</code>, <code>Résultats</code>.</li><li>Gardez une question en tête : <em>une clinique qui traite tout ce qu’on lui demande, pourquoi perd-elle de l’argent ?</em></li><li>Chacun note une idée. Une seule.</li></ol>
+<div class="note-rouge"><p><strong>Ne passez pas l’année.</strong> Tout le monde doit partir de la même clinique pour le bloc suivant.</p></div>
+<p class="fini"><strong>Vous avez fini quand</strong> chaque membre de l’équipe a noté une idée.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> commencez par l’onglet <code>Gestion</code>.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">02</span><h2 class="bloc-titre">La carte de l’argent</h2><span class="bloc-heure">9 h 20</span><span class="bloc-min">30 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Dessiner comment l’argent circule dans la clinique, et mettre un chiffre sur chaque case.</p>
+<p>Une <span class="terme">carte causale</span> <span class="def-courte">un dessin des causes et de leurs effets</span> relie des variables par des flèches. Une flèche va d’une cause vers un effet, et porte une lettre, toujours pour la même question : <em>« si le premier augmente, sans rien changer d’autre, le second augmente-t-il ou baisse-t-il ? »</em></p>
+<ul><li><strong>S</strong> — dans le <strong>même sens</strong> : il monte, l’autre monte.</li><li><strong>O</strong> — en sens <strong>opposé</strong> : il monte, l’autre baisse.</li></ul>
+<svg class="carte-svg" viewBox="0 0 640 380" role="img" aria-labelledby="carte-argent-titre"><title id="carte-argent-titre">La carte de l’argent : prix, demandes, capacité, cas traités, recettes, coûts variables, coûts fixes, résultat net, trésorerie</title>
+<defs><marker id="pointe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+<path class="fleche" d="M170,45 L243,45"/><path class="fleche" d="M95,67 L95,166"/><path class="fleche" d="M170,190 L243,190"/><path class="fleche" d="M170,322 L262,214"/><path class="fleche" d="M320,168 L320,69"/><path class="fleche" d="M320,212 L320,311"/><path class="fleche" d="M395,58 L478,170"/><path class="fleche" d="M545,67 L545,166"/><path class="fleche" d="M395,322 L478,210"/><path class="fleche" d="M545,212 L545,311"/>
+<g class="noeud"><rect x="20" y="23" width="150" height="44" rx="6"/><text x="95" y="45">Prix</text></g>
+<g class="noeud"><rect x="245" y="23" width="150" height="44" rx="6"/><text x="320" y="45">Recettes</text></g>
+<g class="noeud"><rect x="470" y="23" width="150" height="44" rx="6"/><text x="545" y="45">Coûts fixes</text></g>
+<g class="noeud"><rect x="20" y="168" width="150" height="44" rx="6"/><text x="95" y="190">Demandes</text></g>
+<g class="noeud"><rect x="245" y="168" width="150" height="44" rx="6"/><text x="320" y="190">Cas traités</text></g>
+<g class="noeud"><rect x="470" y="168" width="150" height="44" rx="6"/><text x="545" y="190">Résultat net</text></g>
+<g class="noeud"><rect x="20" y="313" width="150" height="44" rx="6"/><text x="95" y="335">Capacité</text></g>
+<g class="noeud"><rect x="245" y="313" width="150" height="44" rx="6"/><text x="320" y="335">Coûts variables</text></g>
+<g class="noeud"><rect x="470" y="313" width="150" height="44" rx="6"/><text x="545" y="335">Trésorerie</text></g>
+<circle class="pastille" cx="207" cy="30" r="11"/><text class="lettre s" x="207" y="30">S</text>
+<circle class="pastille" cx="112" cy="117" r="11"/><text class="lettre o" x="112" y="117">O</text>
+<circle class="pastille" cx="207" cy="175" r="11"/><text class="lettre s" x="207" y="175">S</text>
+<circle class="pastille" cx="230" cy="276" r="11"/><text class="lettre s" x="230" y="276">S</text>
+<circle class="pastille" cx="337" cy="117" r="11"/><text class="lettre s" x="337" y="117">S</text>
+<circle class="pastille" cx="337" cy="262" r="11"/><text class="lettre s" x="337" y="262">S</text>
+<circle class="pastille" cx="451" cy="102" r="11"/><text class="lettre s" x="451" y="102">S</text>
+<circle class="pastille" cx="562" cy="117" r="11"/><text class="lettre o" x="562" y="117">O</text>
+<circle class="pastille" cx="451" cy="278" r="11"/><text class="lettre o" x="451" y="278">O</text>
+<circle class="pastille" cx="562" cy="262" r="11"/><text class="lettre s" x="562" y="262">S</text>
+</svg>
+<p>Deux mots pour lire les coûts : les <span class="terme">coûts variables</span> <span class="def-courte">consommés par le cas : vaccin, réactif, fil</span> montent avec chaque cas traité ; un <span class="terme">coût fixe</span> <span class="def-courte">existe que le cas ait lieu ou non : salaires, loyer</span> ne bouge pas avec l’activité. Ce n’est pas une question de montant, mais de ce qui fait apparaître le coût.</p>
+<h3>Où lire chaque chiffre</h3>
+<p>Ce sont des <strong>prévisions pour l’année 1</strong> : elle n’a pas encore eu lieu.</p>
+<div class="defile"><table><thead><tr><th>Case</th><th>Où la lire</th></tr></thead><tbody>
+<tr><td>Prix</td><td><span class="chemin">Soins et installations › <code>Explorer les services</code></span> → fiche de la consultation → <code>Prix actuel</code></td></tr>
+<tr><td>Demandes</td><td><span class="chemin">Vue d’ensemble</span> → bandeau du haut, case <code>Demandes</code> — et dessous, les demandes pour des services ouvrables maintenant</td></tr>
+<tr><td>Capacité</td><td><span class="chemin">Équipe et opérations</span> → carte <code>Charge de l’équipe</code> : la part des heures payées qui sert vraiment</td></tr>
+<tr><td>Cas traités</td><td><span class="chemin">Vue d’ensemble</span> → bandeau du haut, case <code>Cas traités</code></td></tr>
+<tr><td>Recettes</td><td><span class="chemin">Gestion</span> → la barre, repère <code>Recettes</code></td></tr>
+<tr><td>Coûts variables</td><td><span class="chemin">Gestion</span> → la barre, <code>Coûts variables</code></td></tr>
+<tr><td>Coûts fixes</td><td><span class="chemin">Gestion</span> → la barre, <code>Coûts fixes</code> — vérifiez : <code>Coûts totaux</code> moins <code>Coûts variables</code></td></tr>
+<tr><td>Résultat net</td><td><span class="chemin">Gestion</span> → carte <code>Résultat net</code></td></tr>
+<tr><td>Trésorerie</td><td><span class="chemin">Gestion</span> → carte <code>Trésorerie finale</code></td></tr>
+</tbody></table></div>
+<ol class="etapes"><li>Recopiez la carte en grand, sur une feuille.</li><li>Pour chaque case, trouvez le chiffre à l’écran indiqué et écrivez-le dans la case, avec son unité.</li><li>Choisissez deux flèches. Dites leur phrase à voix haute : « si les prix augmentent, sans rien changer d’autre, les demandes… ».</li><li>Photographiez la feuille et placez-la dans le dossier, partie <strong>Carte</strong>.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> les neuf cases portent un chiffre et son unité, et que deux phrases ont été dites à voix haute.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> sur un chiffre introuvable, écrivez « ? » dans la case et continuez. Votre enseignant passe dans les équipes.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">03</span><h2 class="bloc-titre">La proposition de l’associé</h2><span class="bloc-heure">9 h 50</span><span class="bloc-min">40 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Répondre à une proposition avec les sept gestes, un par un.</p>
+<div class="situation"><p>Votre associé a regardé les comptes et vous écrit :</p><blockquote>« On travaille à pleine capacité et on perd 65 000 €. C’est simple : nos prix sont trop bas. Je propose de les monter de 20 % dès l’an prochain. »</blockquote><p>Il n’attend pas un avis. Il attend des chiffres.</p></div>
+<div class="defile"><table class="gestes"><thead><tr><th>Geste</th><th>Ce que vous faites</th></tr></thead><tbody>
+<tr><td><strong>1 · Décrire</strong></td><td>Il dit « pleine capacité ». Regardez la case Capacité de votre carte. Est-ce vrai ? De quelle capacité parle-t-il ?</td></tr>
+<tr><td><strong>2 · Situer</strong></td><td>Entourez sur votre carte les deux flèches qui partent de Prix. Sa proposition tire dans deux sens : lesquels ?</td></tr>
+<tr><td><strong>3 · Expliquer</strong></td><td>Son explication : « les prix sont trop bas ». Écrivez ce qui la confirmerait, et ce qui la contredirait.</td></tr>
+<tr><td><strong>4 · Chiffrer</strong></td><td>(a) Quelle part du coût total pèsent les salaires ? <strong>Structure des coûts</strong>. (b) Combien valent, en euros, les heures payées qui ne servent pas ? <strong>Coût de la capacité inutilisée</strong>, une fois par personne.</td></tr>
+<tr><td><strong>5 · Comparer</strong></td><td>Testez sa proposition : <strong>Analyse différentielle</strong> (mode d’emploi ci-dessous).</td></tr>
+<tr><td><strong>6 · Cadrer</strong></td><td>Dans la colonne de droite, ouvrez <code>Mieux ou moins bien — vu d’où ?</code>. Les comptes s’améliorent-ils ? Et l’accès aux soins ?</td></tr>
+<tr><td><strong>7 · Proposer</strong></td><td>Quatre lignes dans le dossier, partie <strong>Proposition</strong> : l’affirmation · les éléments chiffrés · la condition · le risque.</td></tr>
+</tbody></table></div>
+<div class="voir-jeu"><p><strong>Le test, dans le jeu.</strong> Seule la consultation est ouverte. Passez son prix de 48 € à <strong>58 €</strong> (+20 %, arrondi) : <span class="chemin">Gestion › <code>Prix des services</code></span>. <strong>Ne passez pas l’année.</strong> Dans la colonne de droite, <code>Impact du plan</code>, ligne <code>Résultat net</code> : la colonne <code>Référence sans action</code> donne l’année sans sa proposition, la colonne <code>Planifié</code> l’année avec. Reportez les deux dans le calcul.</p></div>
+<p>Pour les heures, ouvrez <span class="chemin">Équipe et opérations</span> → la fiche de chaque personne → onglet Temps : la barre des heures : le nombre au-dessus de la marque (heures disponibles) et <code>travaillées</code>, avec son salaire annuel.</p>
+<div class="outil"><h3>Structure des coûts</h3><p class="def">La part que chaque ligne de dépense prend dans le coût total. <span class="form">part = montant de la ligne ÷ coût total × 100</span></p><p>Un montant seul ne dit rien : 103 700 € de salaires est un gros chiffre dans une petite clinique et un petit chiffre dans une grande. La part, elle, se compare.</p><p>L’année 1 n’a pas encore eu lieu : la ligne des salaires se lit dans <span class="chemin">Vue d’ensemble</span>, sous l’alerte <code>Les recettes ne couvrent pas les coûts annuels</code>, qui nomme le coût annuel principal et son montant. Le total : <span class="chemin">Gestion</span> → <code>Coûts totaux</code>. Après une année jouée, toutes les lignes sont dans <span class="chemin"><code>Résultats</code> → <code>Comment le résultat se forme</code></span>.</p></div>
+<div class="outil"><h3>Coût de la capacité inutilisée</h3><p class="def">Ce que coûtent les heures payées et non employées. <span class="form">coût = heures inutilisées × (salaire annuel ÷ heures disponibles)</span></p><p>Ces heures sont déjà payées. Elles ne figurent sur aucune ligne de dépense parce qu’elles sont dedans, noyées dans le salaire. Les sortir en euros, c’est transformer « on pourrait mieux s’organiser » en un montant qu’on peut comparer.</p></div>
+<div class="outil"><h3>Analyse différentielle</h3><p class="def">L’écart entre l’année avec la décision et l’année sans elle. <span class="form">écart = résultat avec − résultat sans</span></p><p>La question n’est jamais « est-ce que cela rapporte ? » mais « est-ce que cela rapporte <em>plus que de ne rien changer</em> ? ». Le jeu vous donne les deux côte à côte : <code>Référence sans action</code> et <code>Planifié</code>.</p></div>
+<p class="vers-rail"><strong>Dans le rail :</strong> <strong>Structure des coûts</strong>, <strong>Coût de la capacité inutilisée</strong>, <strong>Analyse différentielle</strong>.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> vos quatre lignes contiennent trois chiffres : la part des salaires, la valeur des heures inutilisées, et l’écart que produit la hausse.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> sur le test : on ne lit pas le résultat de la colonne <code>Planifié</code>, on le soustrait de celui de la <code>Référence sans action</code>. C’est l’écart qui répond à l’associé.</p>
+<p>Ensuite, décidez : gardez-vous la hausse dans votre plan ? Si oui, elle devient votre décision de l’année 1. Sinon, retirez-la avant le bloc 04.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">04</span><h2 class="bloc-titre">Deux années</h2><span class="bloc-heure">10 h 40</span><span class="bloc-min">35 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Voir ce que vos décisions font vraiment, en comparant chaque année avec celle que vous auriez eue sans elles.</p>
+<p>Deux cases de votre carte ne se lisent pas de la même façon. La <code>Trésorerie finale</code> est un <span class="terme">stock</span> <span class="def-courte">une quantité à un instant donné</span> : l’argent en caisse le 31 décembre. Le <code>Résultat net</code> est un <span class="terme">flux</span> <span class="def-courte">un rythme sur une période</span> : ce que l’année a ajouté ou retiré. Un stock ne change que par des flux : sans emprunt, la trésorerie de fin d’année 1, c’est 160 000 € plus le résultat net de l’année.</p>
+<p>Sur votre carte, encadrez deux fois les cases qui sont des stocks.</p>
+<h3>Le journal</h3>
+<div class="defile"><table><thead><tr><th>Année</th><th>Notre décision (une seule)</th><th>Ce que nous attendons</th><th>Résultat net : Référence → Planifié</th><th>Réalisé</th><th>Ce qui reste à expliquer</th><th>Quelle promesse a bougé, et quand</th></tr></thead><tbody><tr><td>1</td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>2</td><td></td><td></td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+<ol class="etapes"><li>Choisissez <strong>une</strong> décision pour l’année 1, parmi ce qui est permis aujourd’hui — la hausse de prix, ou autre chose que votre carte vous suggère.</li><li><strong>Avant de passer l’année</strong> : écrivez ce que vous attendez, puis relevez le <code>Résultat net</code> dans les colonnes <code>Référence sans action</code> et <code>Planifié</code>.</li><li>Passez l’année.</li><li>Relevez le résultat net réalisé dans <span class="chemin"><code>Résultats</code> → <code>Résultats de l’année</code></span>. Lisez les <code>Signaux de l’année</code> sur la même page, puis écrivez une chose qui reste à expliquer. Dans <span class="chemin"><code>Vue d’ensemble</code> → <code>Engagements</code></span>, notez si une promesse est passée de ✓ à ✗, ou l’inverse — et si c’est l’année de votre décision ou la suivante.</li><li>Même chose pour l’année 2.</li></ol>
+<div class="voir-jeu"><p><strong>Pourquoi deux colonnes ?</strong> L’effet de votre décision, c’est <em>Planifié − Référence</em>. Les prévisions du jeu sont exactes : le réalisé doit être égal au planifié — vérifiez-le. Comparer une année à la précédente, en revanche, mélange votre décision avec tout ce qui change d’une année à l’autre : la première année d’un service, le climat de l’équipe, les clients gagnés ou perdus.</p></div>
+<p class="fini"><strong>Vous avez fini quand</strong> les deux lignes du journal sont remplies, la colonne « Planifié » écrite <em>avant</em> de passer l’année.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> sur le choix d’une décision : regardez votre carte et demandez-vous quelle case vous voudriez voir bouger. Si vous ouvrez un service, notez sa première année avec attention.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">05</span><h2 class="bloc-titre">Premier diagnostic</h2><span class="bloc-heure">11 h 15</span><span class="bloc-min">15 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Dire ce qui ne va pas, en séparant ce que vous voyez de ce que vous en pensez.</p>
+<p>« La clinique perd de l’argent » est une <span class="terme">observation</span> <span class="def-courte">ce qu’un écran montre</span>. « Elle perd de l’argent parce que ses prix sont trop bas » est une <span class="terme">explication</span> <span class="def-courte">une cause proposée, qui peut être fausse</span> : elle se teste.</p>
+<ol class="etapes"><li>Ce que nous observons — avec deux chiffres et leur écran.</li><li>Notre explication.</li><li>Ce qui la confirmerait, ou la contredirait.</li><li>Notre question pour mardi.</li></ol>
+<p>Puis entourez, sur votre carte, la case où se trouve selon vous le problème.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> les quatre phrases sont dans le dossier, partie <strong>Diagnostic</strong>, et qu’une case est entourée.</p>
+<p class="surligne">Avant mardi : rien. Votre clinique reste où elle est.</p></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">06</span><h2 class="bloc-titre">La réponse</h2></div><div class="verrou" data-verrou="lundi"><div class="verrou-l"><label><span>Code de l’enseignant</span><input type="text" inputmode="numeric" data-code></label><button class="btn" data-voir>Voir la réponse</button></div><p class="pq" data-msg></p><div class="reponse" hidden data-reponse></div></div></div>
+</div></section>
+<section class="jour" id="mardi"><div class="colonne"><span class="ruban">Mardi · en salle · 9 h – 11 h 30</span><h1>Voir le système</h1><p class="chapeau">Hier, vous avez dessiné où va l’argent. Mais une clinique ne se résume pas à ses comptes : des clients attendent, l’équipe se fatigue, l’activité pollue. Aujourd’hui, chaque équipe part d’une autre variable — et vous verrez qu’elles tiennent toutes ensemble.</p>
+<ol class="cycle"><li class="ici">Décrire</li><li class="ici">Situer</li><li class="ici">Expliquer</li><li class="ici">Chiffrer</li><li class="ici">Comparer</li><li class="ici">Cadrer</li><li class="ici">Proposer</li></ol>
+<div class="defile"><table class="horaire"><thead><tr><th>Heure</th><th>Ce que vous faites</th></tr></thead><tbody><tr><td>9 h 00</td><td>00 · Reprise</td></tr><tr><td>9 h 05</td><td>01 · Votre variable</td></tr><tr class="pause"><td>9 h 30</td><td>pause</td></tr><tr><td>9 h 40</td><td>02 · Assembler</td></tr><tr><td>10 h 05</td><td>03 · Ce que la grande boucle montre</td></tr><tr><td>10 h 20</td><td>04 · « La salle est pleine »</td></tr><tr><td>11 h 05</td><td>05 · Deux années avec votre réponse</td></tr><tr><td>11 h 30</td><td>fin</td></tr></tbody></table></div>
+<div class="dossier-jour"><h3>Ce soir, votre dossier contient</h3><ol><li><strong>Carte</strong> — la boucle de votre équipe, puis votre grande carte, marquée ✓ et ✗, avec un trait qui l’entoure et ce qui reste dehors.</li><li><strong>Proposition</strong> — votre réponse à « La salle est pleine », en quatre lignes.</li><li><strong>Journal</strong> — les années 3 et 4.</li></ol></div>
+<div class="permis"><h3>Permis à partir d’aujourd’hui</h3><p>En plus de lundi (prix, ouvrir ou fermer un service que l’équipe sait déjà assurer, répartition des heures) : <strong>horaires d’ouverture · heures supplémentaires · salaires · stratégie RH · réunion d’équipe · communication client · rythme des services · mesures de durabilité · marché cible</strong>.</p><p><strong>Toujours impossible</strong> : embaucher, ajouter une salle ou un équipement, former, emprunter, déménager. La banque refuse tout agrandissement avant vendredi.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">00</span><h2 class="bloc-titre">Reprise</h2><span class="bloc-heure">9 h 00</span><span class="bloc-min">5 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Repartir de ce que chaque équipe cherche à comprendre.</p>
+<ol class="etapes"><li>Chaque équipe lit à voix haute sa question pour mardi, écrite hier dans le <strong>Diagnostic</strong>.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> les trois questions sont au tableau.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">01</span><h2 class="bloc-titre">Votre variable</h2><span class="bloc-heure">9 h 05</span><span class="bloc-min">25 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Dessiner ce qui fait bouger une variable de la clinique, et ce qu’elle fait bouger à son tour.</p>
+<p>Votre enseignant attribue une variable à chaque équipe. Vous voulez <strong>l’améliorer</strong>.</p>
+<div class="defile"><table class="equipes"><thead><tr><th>Équipe</th><th>Votre variable</th><th>Où la lire</th></tr></thead><tbody>
+<tr><td>1</td><td><strong>L’accès aux soins</strong> — les demandes qui restent sans réponse</td><td><span class="chemin">Vue d’ensemble</span> → bandeau du haut, case <code>Cas traités</code> : les demandes refusées ; <span class="chemin">Équipe et opérations</span> → <code>Agir sur le climat et la confiance</code> → <code>Pression d’accès</code> (les refus qui s’accumulent) ; colonne de droite → <code>Mieux ou moins bien — vu d’où ?</code> → <code>L’accès aux soins</code></td></tr>
+<tr><td>2</td><td><strong>Le climat de l’équipe</strong> — de 0 à 100</td><td><span class="chemin">Vue d’ensemble</span> → carte <code>Climat de l’équipe</code> ; colonne de droite → <code>Mieux ou moins bien — vu d’où ?</code> → <code>Les gens qui font le travail</code></td></tr>
+<tr><td>3</td><td><strong>L’empreinte carbone</strong> — en tonnes</td><td><span class="chemin">Durabilité</span> → cartes <code>Empreinte carbone</code> et <code>Par cas traité</code>, puis <code>Origine de l’empreinte</code> ; colonne de droite → <code>Mieux ou moins bien — vu d’où ?</code> → <code>Ce que cela laisse derrière</code></td></tr>
+</tbody></table></div>
+<p>Hier, la carte de l’argent allait dans un seul sens. Aujourd’hui, cherchez une <span class="terme">boucle causale</span> <span class="def-courte">une carte qui se referme : en suivant les flèches, on revient au point de départ</span>.</p>
+<ol class="etapes"><li>Écrivez votre variable au centre d’une grande feuille.</li><li>Trouvez trois à cinq variables qui la font monter ou baisser. Chacune doit exister à un écran du jeu : notez lequel.</li><li>Tracez les flèches. Sur chacune, <strong>S</strong> (même sens) ou <strong>O</strong> (sens opposé), et dites sa phrase à voix haute.</li><li>Continuez dans l’autre sens : sur quoi votre variable agit-elle ? Essayez de revenir jusqu’à elle.</li><li>Testez une flèche dans le jeu.</li></ol>
+<div class="voir-jeu"><p><strong>Tester une flèche.</strong> Planifiez un changement sur sa cause, <strong>sans passer l’année</strong>. Regardez dans la colonne de droite si l’effet bouge, et dans le sens que vous avez écrit. Puis retirez le changement.</p></div>
+<p class="fini"><strong>Vous avez fini quand</strong> votre feuille porte au moins quatre variables, une lettre sur chaque flèche, une boucle refermée, et une flèche testée dans le jeu.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> partez d’une décision que vous pouvez prendre dans le jeu, et demandez-vous ce qu’elle change à votre variable.</p></div>
+
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">02</span><h2 class="bloc-titre">Assembler</h2><span class="bloc-heure">9 h 40</span><span class="bloc-min">25 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Relier les trois boucles et la carte de l’argent en une seule carte.</p>
+<p>Formez des groupes de trois : <strong>une personne de chaque équipe</strong>. Chacun apporte la boucle de son équipe.</p>
+<ol class="etapes"><li>Chacun présente sa boucle en deux minutes : sa variable, deux flèches, la boucle.</li><li>Posez au centre la carte de l’argent de lundi.</li><li>Cherchez les variables qui apparaissent sur plusieurs dessins. Ce sont les points de jonction.</li><li>Reliez tout sur une seule feuille, par ces variables. Une flèche ne relie deux dessins que si les deux personnes concernées savent dire sa phrase.</li><li>Marquez en couleur deux endroits : là où un effet arrive en retard, et là où quelque chose cesse de croître.</li><li>Photographiez la feuille, puis retournez dans votre équipe.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> une feuille relie les trois boucles et la carte de l’argent par au moins deux variables communes.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> pour trouver une jonction : regardez la case <strong>Cas traités</strong>. Apparaît-elle chez les autres ?</p></div>
+
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">03</span><h2 class="bloc-titre">Ce que la grande boucle montre</h2><span class="bloc-heure">10 h 05</span><span class="bloc-min">15 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Nommer quatre choses qu’une grande boucle montre et qu’un tableau de chiffres cache.</p>
+<p>Votre enseignant projette une grande boucle, la compare aux vôtres, puis joue devant vous trois années d’une clinique qui force l’allure. Chaque idée ci-dessous se voit dans le jeu.</p>
+<div class="concept"><h3>Un délai</h3><p>Le <span class="terme">délai</span> <span class="def-courte">le temps entre une cause et son effet</span> fait apparaître la cause et l’effet sur deux années différentes. Sur la carte : deux traits // sur la flèche.</p><p><strong>Dans le jeu :</strong> un service qui ouvre ne reçoit que 60 % de sa demande la première année ; les heures supplémentaires d’une année reviennent en absences l’année suivante.</p></div>
+<div class="concept"><h3>Un plafond</h3><p>Un <span class="terme">plafond</span> <span class="def-courte">une limite qui arrête une croissance</span> transforme une montée en palier. La question utile n’est pas « jusqu’où ça monte ? » mais « qu’est-ce qui l’arrêtera ? ».</p><p><strong>Dans le jeu :</strong> le marché est fini. Sous la case <code>Demandes</code> du bandeau de la vue d’ensemble, les demandes « pour des services ouvrables maintenant » sont ce qui reste à prendre sans rien acheter.</p></div>
+<div class="concept"><h3>Un seuil de basculement</h3><p>Un <span class="terme">seuil de basculement</span> <span class="def-courte">un niveau à partir duquel le comportement change d’un coup</span> fait qu’une boucle qui tenait se met à se dégrader.</p><p><strong>Dans le jeu :</strong> sous 50, le climat de l’équipe fait monter les absences ; sous 30, quelqu’un démissionne en fin d’année. Moins de monde, c’est plus de charge pour ceux qui restent — et la charge pèse à son tour sur le climat.</p></div>
+<div class="concept"><h3>Une contrainte</h3><p>Une <span class="terme">contrainte</span> <span class="def-courte">la ressource qui limite l’activité, une seule à la fois</span> agit sur toute la boucle : tant qu’elle ne bouge pas, pousser ailleurs ne change rien.</p><p><strong>Dans le jeu :</strong> avant de passer l’année, le jeu ne la nomme pas : comparez ce qui est utilisé à ce qui est disponible — les salles dans <span class="chemin">Soins et installations</span>, les heures dans <span class="chemin">Équipe et opérations</span>. Après, <span class="chemin">Résultats</span> → <code>Contrainte principale</code>, et les refus par cause.</p></div>
+<ol class="etapes"><li>Sur votre grande carte, ajoutez // sur chaque délai, une barre sur chaque plafond, un ⚠ sur chaque seuil.</li><li>Entourez ce qui, selon vous, limite votre clinique : la salle ou les heures les plus proches de leur capacité. Vous le vérifierez dans <span class="chemin">Résultats</span> une fois l’année passée.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> votre grande carte porte au moins un délai, un plafond, un seuil, et la contrainte entourée.</p></div>
+
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">04</span><h2 class="bloc-titre">« La salle est pleine »</h2><span class="bloc-heure">10 h 20</span><span class="bloc-min">45 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Choisir une réponse à une clinique saturée, la prévoir avec votre carte, et la vérifier dans le jeu.</p>
+<div class="situation"><p>Réunion d’équipe, début de l’année 3. Des demandes restent sans réponse. Trois propositions sont sur la table :</p>
+<ul><li><strong>D<sup>re</sup> Amina Kone</strong> : « Ouvrons plus tard en semaine. Je ferai des heures. »</li><li><strong>Maya Chen</strong> : « Raccourcissons les consultations. »</li><li><strong>Votre associé</strong> : « Montons le prix de la consultation : ça filtrera. »</li></ul>
+<p>Et un courrier de la commune demande aux cliniques de réduire les trajets en voiture de leurs clients.</p>
+<p>Si, chez vous, ce n’est pas une salle qui est au plus près de sa capacité, remplacez « la salle » par ce que vous trouvez : les propositions restent les mêmes.</p></div>
+<div class="defile"><table><thead><tr><th>La proposition</th><th>Où cliquer</th></tr></thead><tbody>
+<tr><td>Ouvrir plus tard</td><td><span class="chemin">Équipe et opérations</span> → <code>Horaires d’ouverture</code></td></tr>
+<tr><td>Faire des heures</td><td><span class="chemin">Équipe et opérations</span> → fiche de la personne → onglet Temps : au-delà de 100 %, jusqu’à 130 %</td></tr>
+<tr><td>Raccourcir les consultations</td><td><span class="chemin">Soins et installations › <code>Explorer les services</code></span> → la consultation → <code>Rythme : temps par rendez-vous</code></td></tr>
+<tr><td>Monter le prix</td><td><span class="chemin">Gestion</span> → <code>Prix des services</code> : chaque service y affiche le <code>Prix accepté par vos clients</code> — une fourchette, tant qu’aucune étude du marché local ne la resserre (<span class="chemin">Gestion</span> → <code>Communication et étude de marché</code>). Au-dessus, moins de demandes, et la confiance baisse chaque année.</td></tr>
+<tr><td>Changer de clients visés</td><td><span class="chemin">Gestion</span> → <code>Marché cible</code> : chaque type de clients accepte d’autres prix.</td></tr>
+<tr><td>Le courrier de la commune</td><td><span class="chemin">Durabilité</span> → <code>Plan d’accès bas carbone</code></td></tr>
+</tbody></table></div>
+<p>Pour retirer une décision planifiée : la croix à côté d’elle, dans la colonne de droite.</p>
+<div class="outil"><h3>Seuil de rentabilité</h3><p class="def">Le nombre de cas à partir duquel on ne perd plus. <span class="form">seuil = coûts fixes ÷ marge moyenne par cas</span> La <span class="terme">marge moyenne par cas</span> <span class="def-courte">ce qu’un cas « ordinaire » de votre clinique laisse une fois payés ses coûts variables</span> se calcule à partir de vos recettes, de vos coûts variables et de vos cas traités.</p><p>Votre clinique gagne déjà de l’argent ? Le seuil sert alors à juger une <em>décision</em> : <strong>combien de cas doit-elle apporter pour payer ce qu’elle coûte ?</strong> Coût fixe ajouté ÷ marge moyenne par cas. Par exemple, une décision qui coûte 12 000 € par an, dans une clinique où le cas moyen laisse 46 €, doit apporter 261 cas de plus.</p></div>
+<div class="outil"><h3>Marge de sécurité</h3><p class="def">De combien l’activité peut chuter avant de repasser sous le seuil. <span class="form">(cas traités − seuil) ÷ cas traités × 100</span></p><p>C’est le seul de vos calculs qui parle de l’avenir tel qu’il est : incertain. Une décision qui ajoute des coûts fixes la fait baisser.</p></div>
+<ol class="etapes"><li><strong>Une seule carte.</strong> Votre équipe garde une grande carte — la plus complète des trois photos — et la complète. C’est celle-là que vous utiliserez jusqu’à vendredi.</li><li><strong>Décrire.</strong> Relevez ce qui est au plus près de sa capacité, les demandes sans réponse, la <code>Charge de l’équipe</code>, le <code>Climat de l’équipe</code>, la <code>Confiance des clients</code> et l’empreinte <code>Par cas traité</code>.</li><li><strong>Choisir.</strong> Une réponse, deux au plus, parmi les propositions et ce qui est permis aujourd’hui.</li><li><strong>Prévoir avec la carte.</strong> Avant de toucher au jeu : sur chaque case que votre réponse devrait faire bouger, écrivez ↑ ou ↓.</li><li><strong>Comparer.</strong> Planifiez la réponse, <strong>sans passer l’année</strong>. Lisez <code>Référence sans action</code> et <code>Planifié</code>, puis ouvrez <code>Mieux ou moins bien — vu d’où ?</code> (cliquez sur la ligne pour la déplier).</li><li><strong>Vérifier.</strong> Sur la carte, à côté de chaque ↑ ou ↓ : ✓ si le jeu le confirme, ✗ sinon.</li><li><strong>Expliquer chaque ✗.</strong> La flèche est-elle fausse — ou le jeu ne compte-t-il pas cela ? Tracez un trait autour de votre carte : ce que le jeu ne compte pas s’écrit à l’extérieur.</li><li><strong>Chiffrer.</strong> Le <strong>Seuil de rentabilité</strong> de votre réponse : coût fixe ajouté ÷ marge moyenne par cas = cas nécessaires. Le coût fixe ajouté se lit dans <code>Ce que ce choix change</code>, affiché avant de valider la décision : additionnez les lignes <code>Salaires</code>, <code>Charges sociales</code>, <code>Installations</code> et <code>Coûts d’exploitation</code> — pas les <code>Coûts variables</code> ni les <code>Heures supplémentaires</code>, qui suivent l’activité. Comparez aux cas apportés (<code>Cas traités</code>, Planifié − Référence). Puis <strong>Marge de sécurité</strong> : notez votre marge de sécurité en pourcentage, avec la réponse.</li><li><strong>Proposer.</strong> Quatre lignes dans <strong>Proposition</strong> — et dans le risque, ce que votre réponse coûte à l’équipe, aux clients ou au climat.</li></ol>
+<p>Tracer ce trait, c’est tracer un <span class="terme">périmètre</span> <span class="def-courte">la limite de ce qu’une carte, ou un modèle, compte</span>. Une carte n’est pas fausse parce qu’elle est incomplète. Elle devient dangereuse quand on oublie ce qu’elle laisse dehors.</p>
+<p class="vers-rail"><strong>Dans le rail :</strong> <strong>Seuil de rentabilité</strong>, <strong>Marge de sécurité</strong>.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> votre carte porte vos ↑↓ avec leurs ✓ et ✗, au moins une chose écrite hors du trait, les cas nécessaires face aux cas apportés, et vos quatre lignes.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : une réponse qui n’ajoute aucun coût fixe n’a pas de seuil à atteindre — dites-le, c’est une information. Et si mettre l’équipe au-delà de 100 % ne change rien, demandez-vous pourquoi : regardez la contrainte.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">05</span><h2 class="bloc-titre">Deux années avec votre réponse</h2><span class="bloc-heure">11 h 05</span><span class="bloc-min">25 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Voir ce que votre réponse fait sur deux ans, et ce que la prévision d’un an ne montrait pas.</p>
+<ol class="etapes"><li>Gardez votre réponse dans le plan, ou changez-la après la discussion.</li><li>Année 3 : écrivez la ligne du journal (Référence, Planifié avant ; réalisé après), puis passez l’année.</li><li>Année 4 : une décision au plus — ou « aucune décision » — puis passez l’année.</li><li>Sur votre carte, entourez ce qui a bougé en deux ans et que la prévision d’un an ne montrait pas.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> les lignes des années 3 et 4 sont au journal, et qu’au moins une case est entourée — ou que vous avez écrit « rien n’a bougé de plus », avec le chiffre qui le montre.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : comparez le <code>Climat de l’équipe</code> et la <code>Confiance des clients</code> de l’année 4 avec ceux que vous aviez relevés au début du bloc 04.</p></div>
+
+<div class="avant-demain"><h3>Avant mercredi</h3><p>Votre clinique a quatre années derrière elle. <code>Enregistrer la clinique</code> et gardez le fichier : mercredi se fait chez vous. Rien d’autre.</p></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">06</span><h2 class="bloc-titre">La réponse</h2></div><div class="verrou" data-verrou="mardi"><div class="verrou-l"><label><span>Code de l’enseignant</span><input type="text" inputmode="numeric" data-code></label><button class="btn" data-voir>Voir la réponse</button></div><p class="pq" data-msg></p><div class="reponse" hidden data-reponse></div></div></div>
+</div></section>
+<section class="jour" id="mercredi"><div class="colonne"><span class="ruban maison">Mercredi · seul, chez vous · 2 h 30</span><h1>Ce qui limite vraiment la clinique</h1><p class="chapeau">Votre clinique a quatre années derrière elle, et elle ne ressemble plus à celle des autres équipes. Aujourd’hui, vous trouvez ce qui la limite, vous décidez quels services méritent cette ressource rare, et vous jouez les années 5 et 6. Puis vous regardez ce qu’il faudrait pour agrandir.</p>
+<ol class="cycle"><li class="ici">Décrire</li><li class="ici">Situer</li><li class="ici">Expliquer</li><li class="ici">Chiffrer</li><li class="ici">Comparer</li><li>Cadrer</li><li class="ici">Proposer</li></ol>
+<p>Vous travaillez seul, à votre rythme. Les gestes ne sont plus détaillés : leurs noms suffisent. Prévoyez une pause quand vous en avez besoin.</p>
+<div class="defile"><table class="horaire"><thead><tr><th>Durée</th><th>Ce que vous faites</th></tr></thead><tbody>
+<tr><td>10 min</td><td>00 · Reprise</td></tr><tr><td>25 min</td><td>01 · Ce qui limite votre clinique</td></tr><tr><td>35 min</td><td>02 · Quels services méritent la ressource rare ?</td></tr><tr><td>30 min</td><td>03 · Deux années</td></tr><tr><td>40 min</td><td>04 · Ce qu’il faudrait pour agrandir</td></tr><tr><td>10 min</td><td>05 · Une question pour jeudi</td></tr></tbody></table></div>
+<div class="dossier-jour"><h3>Ce soir, votre dossier contient</h3><ol><li><strong>Diagnostic</strong> — la contrainte de votre clinique, avec son chiffre, et votre classement des services.</li><li><strong>Journal</strong> — les années 5 et 6.</li><li><strong>Proposition</strong> — le premier jet de votre réponse à la D<sup>re</sup> Neri.</li><li>Une question pour le praticien.</li></ol></div>
+<div class="permis"><h3>Permis à partir d’aujourd’hui</h3><p>En plus de lundi et mardi : <strong>former une personne</strong> à une nouvelle compétence.</p><p><strong>Toujours impossible</strong> : embaucher, ajouter une salle ou un équipement, emprunter, déménager. Vendredi seulement.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">00</span><h2 class="bloc-titre">Reprise</h2><span class="bloc-min">10 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Retrouver votre clinique là où vous l’avez laissée.</p>
+<ol class="etapes"><li>Si vous changez d’ordinateur : <code>Charger une clinique</code>, avec le fichier enregistré mardi.</li><li>Vérifiez que les lignes des années 3 et 4 du journal sont complètes.</li><li>Ouvrez votre grande carte : c’est sur elle que vous travaillez aujourd’hui.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> le jeu affiche l’année 5 et que votre carte est sous les yeux.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">01</span><h2 class="bloc-titre">Ce qui limite votre clinique</h2><span class="bloc-min">25 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Nommer la ressource qui limite votre clinique, avec un chiffre.</p>
+<div class="outil"><h3>Analyse de la contrainte</h3><p class="def">À un instant donné, une seule ressource limite l’activité. <span class="form">cas possibles = le plus petit de : ce que le temps permet, ce que la demande permet</span></p><p>Ajouter n’importe quelle autre ressource que la contrainte ne produit pas un cas de plus. Mettre l’équipe au-delà de 100 % quand c’est la salle qui est pleine, c’est payer des heures sans toucher à ce qui bloque. La démarche : trouver la contrainte, en tirer le maximum — et seulement ensuite payer pour l’élargir.</p></div>
+<div class="defile"><table><thead><tr><th>Le nombre qu’il vous faut</th><th>Où il se lit</th></tr></thead><tbody>
+<tr><td>Ce qui limite la clinique</td><td>à déduire : salles (<span class="chemin">Soins et installations</span>) et heures (<span class="chemin">Équipe et opérations</span>), utilisées contre disponibles ; l’année passée : <span class="chemin">Résultats</span> → <code>Contrainte principale</code></td></tr>
+<tr><td>Une salle : heures utilisées et disponibles, demandes refusées</td><td><span class="chemin">Soins et installations</span> → <code>Utilisation des salles et équipements</code></td></tr>
+<tr><td>Une personne : heures disponibles</td><td><span class="chemin">Équipe et opérations</span> → sa fiche → onglet Temps → le nombre au-dessus de la marque de la barre</td></tr>
+<tr><td>Un service : temps par cas, demandes</td><td>sa fiche : <code>Temps vétérinaire par cas</code>, <code>Temps de soutien par cas</code>, <code>Temps de salle par cas</code>, <code>Demandes prévues</code></td></tr>
+</tbody></table></div>
+<ol class="etapes"><li><strong>Décrire.</strong> Cherchez ce qui est au plus près de sa capacité : une salle, des heures vétérinaires, des heures de soutien, une compétence ?</li><li><strong>Chiffrer.</strong> Pour un service qui en dépend, entrez dans <strong>Analyse de la contrainte</strong> les heures disponibles de cette ressource, le temps qu’un cas en prend, ses demandes et sa marge. Qu’est-ce qui limite : le temps ou la demande ?</li><li><strong>Situer.</strong> Sur votre grande carte, entourez cette ressource dans la case Capacité, avec son chiffre.</li></ol>
+<p class="vers-rail"><strong>Dans le rail :</strong> <strong>Analyse de la contrainte</strong>.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> votre diagnostic nomme la contrainte, avec un chiffre lu à l’écran.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : un service ouvert cette année ne reçoit que 60 % de sa demande. Cochez « première année : oui » dans le calcul.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">02</span><h2 class="bloc-titre">Quels services méritent la ressource rare ?</h2><span class="bloc-min">35 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Classer les services selon ce que rapporte une heure de ce qui vous manque — puis le vérifier dans le jeu.</p>
+<p>Quand une ressource est pleine, plusieurs services se la disputent. La question n’est plus « combien rapporte un cas ? » mais « combien rapporte une heure de ce qui manque ? ».</p>
+<div class="outil"><h3>Marge sur coûts variables</h3><p class="def">Ce qu’un cas laisse une fois payés ses coûts variables. <span class="form">marge = prix − coût variable</span> Rapportée au prix, elle donne le <span class="terme">taux de marge</span> <span class="def-courte">la part du prix qui reste</span>.</p><p>Ce n’est <em>pas</em> un bénéfice : le bénéfice n’apparaît que lorsque les marges accumulées ont couvert les coûts fixes. Une consultation à 48 € ne vous laisse pas 48 € mais 42 €.</p></div>
+<div class="outil"><h3>Marge par heure de la ressource rare</h3><p class="def">Ce que rapporte une heure de la ressource qui manque. <span class="form">marge par cas ÷ heures de cette ressource par cas</span></p><p>Si c’est une salle qui manque, l’heure qui compte est le <code>Temps de salle par cas</code>. Si ce sont des heures de vétérinaire ou de soutien, c’est <code>Temps vétérinaire par cas</code> ou <code>Temps de soutien par cas</code>. Un service qui ne consomme rien de cette ressource ne se classe pas : il passe devant.</p></div>
+<div class="note-rouge"><p><strong>Ne les additionnez jamais.</strong> La marge par heure se divise par les heures d’<em>une seule</em> ressource : celle qui manque. Une vaccination prend 0,34 h de soutien et aucune heure de vétérinaire ; elle occupe la salle 0,34 h. Additionner des heures de ressources différentes donne un nombre qui ne répond à aucune question.</p></div>
+<ol class="etapes"><li><strong>Décrire.</strong> Listez les services ouverts qui utilisent votre ressource rare.</li><li><strong>Chiffrer.</strong> Pour chacun : <strong>Marge sur coûts variables</strong>, puis <strong>Marge par heure de la ressource rare</strong>. Classez-les.</li><li><strong>Prévoir avec la carte.</strong> Le dernier du classement occupe la ressource pour peu. Comment lui faire rapporter plus par heure — son prix, son rythme, le temps que l’équipe lui donne ? Écrivez ↑ ou ↓ sur les cases que cela devrait faire bouger.</li><li><strong>Comparer.</strong> Planifiez-le, sans passer l’année : <code>Référence sans action</code> et <code>Planifié</code>, puis <code>Mieux ou moins bien — vu d’où ?</code>. Marquez ✓ ou ✗ sur la carte.</li><li><strong>Expliquer.</strong> Si le jeu vous contredit, pourquoi ? Un service peut avoir besoin de plusieurs ressources à la fois.</li></ol>
+<p class="vers-rail"><strong>Dans le rail :</strong> <strong>Marge sur coûts variables</strong>, <strong>Marge par heure de la ressource rare</strong>.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> votre diagnostic contient le classement, et un changement testé avec son résultat — gardé ou retiré.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : le classement par heure n’est pas le classement par cas. S’il donne le même ordre, une division a été oubliée.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">03</span><h2 class="bloc-titre">Deux années</h2><span class="bloc-min">30 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Vérifier sur deux vraies années ce que votre classement prévoyait.</p>
+<ol class="etapes"><li>Une décision au plus par année, parmi ce qui est permis.</li><li><strong>Avant de passer chaque année</strong> : écrivez la <code>Contrainte principale</code> que vous prévoyez, et relevez <code>Référence sans action</code> et <code>Planifié</code>.</li><li>Quand vous passez l’année, le jeu vous demande aussi votre prévision : choisissez la même contrainte, plutôt que <code>Passer — pas de prédiction</code>.</li><li>Passez les années 5 et 6. Remplissez leurs lignes du journal.</li><li>La contrainte annoncée est-elle celle que vous aviez prévue ? Sinon, qu’est-ce qui vous avait échappé ?</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> les lignes des années 5 et 6 sont complètes, avec votre prévision et ce qui s’est passé.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : un écart entre prévu et réalisé n’est pas un échec. C’est souvent la meilleure question pour jeudi et vendredi.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">04</span><h2 class="bloc-titre">Ce qu’il faudrait pour agrandir</h2><span class="bloc-min">40 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Chiffrer ce que coûterait d’élargir la clinique, et écrire un premier jet de réponse à la D<sup>re</sup> Neri.</p>
+<div class="situation"><p>En réunion, quelqu’un tranche :</p><blockquote>« La chirurgie laisse 269 € par cas, la vaccination 45 €. Le jour où la banque dira oui, on ouvre la chirurgie. »</blockquote><p>Et sur la table, la lettre de la D<sup>re</sup> Neri (page <strong>Pourquoi</strong>, bloc 02). Deux façons d’agrandir, aucune possible avant vendredi.</p></div>
+<div class="outil"><h3>Point d’indifférence</h3><p class="def">Le niveau d’activité où deux options coûtent exactement la même chose. <span class="form">(coût fixe 1 − coût fixe 2) ÷ (coût par cas 2 − coût par cas 1)</span></p><p>Il ne sert que lorsque les deux options n’ont pas la même forme de coût : l’une chère à l’année et bon marché au cas, l’autre l’inverse. Si les deux coûtent la même chose par cas, il n’y a pas de point d’indifférence : le volume ne tranche pas, c’est la durée qui tranche.</p></div>
+<p>La durée se mesure avec les deux derniers champs de <strong>Analyse différentielle</strong> : le <span class="terme">délai de récupération</span> <span class="def-courte">le nombre d’années avant de récupérer le montant investi</span>. En <em>montant investi</em>, ce que l’achat coûte le premier jour ; en <em>gain annuel</em>, le loyer que vous ne payez plus, moins l’entretien de l’appareil acheté.</p>
+<ol class="etapes"><li><strong>La chirurgie.</strong> Ouvrez sa fiche : que faudrait-il acheter, louer ou apprendre ? Par heure de vétérinaire, combien laisse-t-elle (<strong>Marge par heure de la ressource rare</strong>) ? Et un cas de chirurgie occuperait-il votre ressource rare ?</li><li><strong>L’échographie.</strong> Acheter ou louer l’appareil : essayez <strong>Point d’indifférence</strong> avec le même coût par cas des deux côtés. Puis le délai de récupération avec <strong>Analyse différentielle</strong>. L’entretien annuel se lit sur la carte de l’échographe : <span class="chemin">Soins et installations › Gérer l’équipement</span>.</li><li><strong>Situer.</strong> Sur votre grande carte : par quelle flèche un agrandissement agit-il, quel délai porte-t-elle, et qu’arriverait-il à votre contrainte ?</li><li><strong>Proposer.</strong> Quatre lignes dans <strong>Proposition</strong> : votre premier jet de réponse à la D<sup>re</sup> Neri.</li></ol>
+<p class="vers-rail"><strong>Dans le rail :</strong> <strong>Point d’indifférence</strong>, <strong>Analyse différentielle</strong>, <strong>Marge par heure de la ressource rare</strong>.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> votre premier jet tient en quatre lignes et cite au moins un délai de récupération.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : n’essayez aucun agrandissement dans le jeu aujourd’hui. Vendredi, vous le testerez sur trois ans.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">05</span><h2 class="bloc-titre">Une question pour jeudi</h2><span class="bloc-min">10 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Préparer une question qui ouvre une conversation avec le praticien.</p>
+<p>Jeudi, un vétérinaire qui a exercé toute sa carrière vient parler du métier. Il est à la retraite et ne connaît pas votre clinique : ne l’interrogez pas sur le jeu. Demandez-lui une histoire.</p>
+<ul><li>« Comment organisiez-vous votre temps entre les consultations, la chirurgie et le reste ? »</li><li>« Comment avez-vous décidé d’ouvrir un nouveau service — et qu’est-ce qui vous a surpris ensuite ? »</li><li>« Une décision d’argent que vous referiez autrement ? »</li></ul>
+<ol class="etapes"><li>Écrivez une question dans le dossier, sous votre nom.</li><li>Lisez celles des autres. Avant jeudi 9 h, l’équipe en retient une.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> votre question est écrite, et qu’elle demande une expérience plutôt qu’un avis sur votre clinique.</p>
+<div class="avant-demain"><h3>Avant vendredi</h3><p>Votre clinique a six années derrière elle. <code>Enregistrer la clinique</code>, et apportez le fichier vendredi.</p></div></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">06</span><h2 class="bloc-titre">La réponse</h2></div><div class="verrou" data-verrou="mercredi"><div class="verrou-l"><label><span>Code de l’enseignant</span><input type="text" inputmode="numeric" data-code></label><button class="btn" data-voir>Voir la réponse</button></div><p class="pq" data-msg></p><div class="reponse" hidden data-reponse></div></div></div>
+</div></section>
+<section class="jour" id="jeudi"><div class="colonne"><span class="ruban">Jeudi · en salle, avec un praticien · 9 h – 11 h 30</span><h1>Ce que la carte laisse dehors</h1><p class="chapeau">Un vétérinaire qui a exercé toute sa carrière vient parler du métier. Il ne connaît pas votre clinique, et ce qu’il racontera ne se trouve dans aucune de vos cases. C’est justement ce qui rend la matinée utile.</p>
+<ol class="cycle"><li>Décrire</li><li>Situer</li><li>Expliquer</li><li>Chiffrer</li><li>Comparer</li><li class="ici">Cadrer</li><li class="ici">Proposer</li></ol>
+<div class="defile"><table class="horaire"><thead><tr><th>Heure</th><th>Ce que vous faites</th></tr></thead><tbody>
+<tr><td>9 h 00</td><td>00 · Avant qu’il commence</td></tr><tr><td>9 h 05</td><td>01 · La rencontre</td></tr><tr class="pause"><td>10 h 35</td><td>pause</td></tr><tr><td>10 h 45</td><td>02 · Hors du périmètre</td></tr><tr><td>11 h 00</td><td>03 · Cadrer votre premier jet</td></tr><tr><td>11 h 30</td><td>fin</td></tr></tbody></table></div>
+<div class="dossier-jour"><h3>Ce soir, votre dossier contient</h3><ol><li><strong>Carte</strong> — les phrases du praticien, dedans ou hors du trait.</li><li><strong>Proposition</strong> — le premier jet de mercredi, corrigé, avec une phrase qui dit de quel point de vue il juge.</li></ol></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">00</span><h2 class="bloc-titre">Avant qu’il commence</h2><span class="bloc-heure">9 h 00</span><span class="bloc-min">5 min</span></div>
+<ol class="etapes"><li>Ouvrez une page blanche et coupez-la en deux. À gauche : <strong>ce qui vaut la peine</strong> — ce qu’il dit du métier, de ce qui le rend bon. À droite : <strong>ce qui pèse</strong> — ce qui est dur, ce qui use, ce qui n’est jamais payé.</li><li>Ayez sous la main la question que votre équipe a retenue mercredi.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> la page est prête et que la question est choisie.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">01</span><h2 class="bloc-titre">La rencontre</h2><span class="bloc-heure">9 h 05</span><span class="bloc-min">90 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Écouter ce que le métier recouvre vraiment, et l’entendre raconté par quelqu’un qui l’a fait.</p>
+<p>La conversation lui appartient. Il parlera sans doute d’où il vient, de ce qui l’a fait tenir, et de tout ce qu’un vétérinaire peut être. Il ne connaît pas votre clinique : ne lui demandez pas de juger vos chiffres.</p>
+<ol class="etapes"><li>Remplissez les deux colonnes, <strong>avec ses mots</strong> plutôt que les vôtres : une phrase entendue se discute, un résumé ne se discute pas.</li><li>Chaque fois qu’un rôle du métier est évoqué — rural, urbain, recherche, santé publique, refuge, urgence, enseignement — écrivez-le.</li><li>Quand la conversation s’y prête, votre équipe pose sa question. Écoutez l’histoire jusqu’au bout avant d’en poser une autre.</li><li>Notez surtout ce qu’il raconte du temps, de l’ouverture d’un service, d’une équipe, d’une décision d’argent.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> chaque colonne porte au moins trois phrases dites par lui, et que votre équipe a posé sa question.</p>
+<p class="bloque"><strong>Si vous ne savez pas quoi noter</strong> : une phrase où il dit pourquoi il fait ce métier ; une où il dit ce qu’il a arrêté de faire ; une où il parle d’un animal, d’un client ou d’un collègue en particulier.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">02</span><h2 class="bloc-titre">Hors du périmètre</h2><span class="bloc-heure">10 h 45</span><span class="bloc-min">15 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Ajouter à votre carte ce que le praticien a nommé et que la clinique ne compte pas.</p>
+<p>Mardi, vous avez tracé un trait autour de votre grande carte : son <strong>périmètre</strong>. Les phrases du praticien le complètent.</p>
+<ol class="etapes"><li>Reprenez ses phrases une par une : la clinique compte-t-elle cela ? Si oui, trouvez la case de votre carte et l’écran où cela se lit.</li><li>Si non, écrivez-la à l’extérieur du trait, avec ses mots.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> au moins trois de ses phrases sont placées : dedans avec leur écran, ou dehors avec ses mots.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">03</span><h2 class="bloc-titre">Cadrer votre premier jet</h2><span class="bloc-heure">11 h 00</span><span class="bloc-min">30 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Dire de quel point de vue votre réponse à la D<sup>re</sup> Neri est bonne, et vérifier qu’elle ne compte que ce qui compte.</p>
+<p>Dans le jeu, <code>Mieux ou moins bien — vu d’où ?</code> juge un même plan depuis quatre points de vue : les comptes, l’accès aux soins, les gens qui font le travail, ce que l’année laisse derrière. Ce sont les quatre boucles de mardi. Elles ne comptent pas la même chose : l’accès aux soins compte aussi les demandes que la clinique ne propose pas — 8 700 au début de la semaine —, que le résultat net ignore. Quand elles divergent, aucun chiffre ne tranche : c’est un choix, et c’est le vôtre.</p>
+<div class="concept"><h3>Coûts pertinents et coûts irrécupérables</h3><p>Un <span class="terme">coût pertinent</span> <span class="def-courte">un montant qui change selon l’option retenue</span> entre dans la décision. Un <span class="terme">coût irrécupérable</span> <span class="def-courte">un montant déjà engagé, que plus aucune décision ne récupère</span> n’y entre pas. « On a déjà mis 12 000 € dedans, on ne va pas s’arrêter maintenant » est l’erreur la plus fréquente en réunion.</p></div>
+<div class="concept"><h3>Coût d’opportunité</h3><p>Le <span class="terme">coût d’opportunité</span> <span class="def-courte">ce que rapporte la meilleure option à laquelle vous renoncez</span> n’apparaît dans aucune comptabilité, et il est pourtant réel. Vous savez déjà le chiffrer : c’est la marge par heure de la ressource rare, calculée mercredi.</p></div>
+<ol class="etapes"><li>Relisez votre premier jet. Écrivez une phrase : de quel point de vue juge-t-il ? Si vous ne savez pas, c’est qu’il en adopte un sans le dire.</li><li>Rayez tout montant irrécupérable qui s’y trouverait.</li><li>Ajoutez ce à quoi vous renoncez : les heures de votre vétérinaire qui partiraient à l’échographie, et ce qu’elles rapportaient.</li><li>Ajoutez, si elle est vraie, une chose que le praticien a dite et que votre réponse doit prendre en compte.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> votre premier jet corrigé dit son point de vue, et cite ce à quoi il renonce.</p></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">04</span><h2 class="bloc-titre">La réponse</h2></div><div class="verrou" data-verrou="jeudi"><div class="verrou-l"><label><span>Code de l’enseignant</span><input type="text" inputmode="numeric" data-code></label><button class="btn" data-voir>Voir la réponse</button></div><p class="pq" data-msg></p><div class="reponse" hidden data-reponse></div></div></div>
+</div></section>
+<section class="jour" id="vendredi"><div class="colonne"><span class="ruban presente">Vendredi · présentation · 9 h – 11 h 30</span><h1>Répondre</h1><p class="chapeau">Accepter, refuser ou amender la proposition de la D<sup>re</sup> Neri — et à quelles conditions. Vous avez tous les outils ; aujourd’hui, vous enchaînez les sept gestes seuls.</p>
+<ol class="cycle"><li class="ici">Décrire</li><li class="ici">Situer</li><li class="ici">Expliquer</li><li class="ici">Chiffrer</li><li class="ici">Comparer</li><li class="ici">Cadrer</li><li class="ici">Proposer</li></ol>
+<div class="defile"><table class="horaire"><thead><tr><th>Heure</th><th>Ce que vous faites</th></tr></thead><tbody>
+<tr><td>9 h 00</td><td>00 · Ouverture</td></tr><tr><td>9 h 05</td><td>01 · Tester la proposition sur trois ans</td></tr><tr><td>9 h 55</td><td>02 · Si la demande n’arrive pas</td></tr><tr><td>10 h 10</td><td>03 · Finir la réponse</td></tr><tr class="pause"><td>10 h 30</td><td>pause</td></tr><tr><td>10 h 40</td><td>04 · Présentations</td></tr><tr><td>11 h 25</td><td>05 · Fin</td></tr><tr><td>11 h 30</td><td>fin</td></tr></tbody></table></div>
+<div class="permis"><h3>Permis aujourd’hui, pour le projet seulement</h3><p>Pour tester la proposition de la D<sup>re</sup> Neri : <strong>salle, équipement, formation, embauche, emprunt</strong>. Rien d’autre ne change.</p></div>
+<div class="dossier-jour"><h3>Ce que vous présentez</h3><ol><li><strong>Proposition</strong> — les quatre parties, dans leur dernière version.</li><li><strong>Carte</strong> — votre grande carte, avec la flèche sur laquelle agit votre réponse.</li><li>Le tableau des trois années, et le tableau 100 / 80 / 60.</li></ol><p>En dix minutes. Toute l’équipe prend la parole.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">00</span><h2 class="bloc-titre">Ouverture</h2><span class="bloc-heure">9 h 00</span><span class="bloc-min">5 min</span></div>
+<ol class="etapes"><li>Relisez la lettre de la D<sup>re</sup> Neri (page <strong>Pourquoi</strong>, bloc 02) et votre premier jet corrigé hier.</li><li>Notez l’ordre de passage annoncé par votre enseignant.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> chacun sait ce que l’équipe répond aujourd’hui, même provisoirement.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">01</span><h2 class="bloc-titre">Tester la proposition sur trois ans</h2><span class="bloc-heure">9 h 05</span><span class="bloc-min">50 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Comparer, sur trois années, la clinique avec le projet et la clinique sans lui.</p>
+<p>Un service neuf ne reçoit que 60 % de sa demande sa première année, et l’emprunt court sur cinq. Juger sur la seule première année, c’est juger sur la plus mauvaise : la réponse se joue sur trois ans.</p>
+<ol class="etapes"><li><code>Enregistrer la clinique</code>, au début de l’année 7. C’est votre point de départ commun.</li><li><strong>Sans le projet.</strong> Passez les années 7, 8 et 9 sans rien ajouter. Relevez à chaque fois <code>Résultat net</code>, <code>Trésorerie finale</code> et <code>Contrainte principale</code>.</li><li><code>Charger une clinique</code> : rechargez votre point de départ.</li><li><strong>Avec le projet</strong>, dans la version que vous recommandez : la salle, l’échographe (acheter ou louer), la compétence (former ou engager), puis l’ouverture du service. Donnez-lui ensuite des heures : <span class="chemin">Équipe et opérations</span> → fiche de la personne qui fait l’échographie → onglet Temps. Sans heures, le service ouvert ne traite aucun cas. Avant de le planifier, écrivez sur votre grande carte ↑ ou ↓ sur les cases qu’il devrait faire bouger. Avant de passer l’année 7, relevez <code>Référence sans action</code> et <code>Planifié</code>.</li><li>Passez les années 7, 8 et 9. Relevez les mêmes trois lignes, puis marquez ✓ ou ✗ à côté de vos ↑ et ↓. Dans <span class="chemin"><code>Vue d’ensemble</code> → <code>Engagements</code></span>, notez quelle promesse le projet met en jeu, et quelle année elle passe à ✗.</li><li>Si votre version emprunte : le taux se lit dans <span class="chemin"><code>Gestion</code> → <code>Financement</code></span>. Il dépend de la promesse faite à la banque les années précédentes — une année manquée le relève, deux de suite et la banque refuse. Notez le taux que votre clinique obtient, et pourquoi.</li><li>S’il reste du temps : rechargez, et testez l’autre chemin pour la compétence.</li></ol>
+<div class="defile"><table><thead><tr><th>Année</th><th>Sans le projet : résultat net · trésorerie</th><th>Avec le projet : résultat net · trésorerie</th><th>Contrainte principale avec le projet</th><th>Engagement manqué avec le projet</th></tr></thead><tbody><tr><td>7</td><td></td><td></td><td></td><td></td></tr><tr><td>8</td><td></td><td></td><td></td><td></td></tr><tr><td>9</td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+<p class="fini"><strong>Vous avez fini quand</strong> les trois lignes du tableau sont remplies, des deux côtés.</p>
+<p class="bloque"><strong>Si vous bloquez</strong> : le projet demande quatre actions la même année. Si le jeu refuse la quatrième, prévenez votre enseignant. Si votre réponse change entre l’année 1 et l’année 3, dites-le : c’est un résultat, pas une hésitation.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">02</span><h2 class="bloc-titre">Si la demande n’arrive pas</h2><span class="bloc-heure">9 h 55</span><span class="bloc-min">15 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Dire si votre réponse tient quand la demande d’échographie est plus faible que prévu.</p>
+<ol class="etapes"><li>Relevez l’écart de la troisième année : résultat avec le projet − résultat sans.</li><li>Relevez les cas d’échographie de la troisième année, et la marge d’un cas d’échographie (<strong>Marge sur coûts variables</strong>).</li><li>Si la demande n’arrive qu’à 80 % : écart à 80 % = écart − 20 % des cas d’échographie × marge par cas. À 60 % : retirez 40 %. Les coûts fixes du projet, eux, restent entiers.</li><li>Calculez la <strong>Marge de sécurité</strong> de la clinique avec le projet, et comparez-la au pourcentage noté mardi.</li></ol>
+<div class="defile"><table><thead><tr><th>Si la demande arrive à…</th><th>Écart de la 3<sup>e</sup> année</th><th>Votre réponse tient-elle ?</th></tr></thead><tbody><tr><td>100 % de la prévision</td><td></td><td></td></tr><tr><td>80 %</td><td></td><td></td></tr><tr><td>60 %</td><td></td><td></td></tr></tbody></table></div>
+<p class="vers-rail"><strong>Dans le rail :</strong> <strong>Marge sur coûts variables</strong>, <strong>Marge de sécurité</strong>.</p>
+<p class="fini"><strong>Vous avez fini quand</strong> le tableau est rempli. Si votre réponse ne tient qu’à la première ligne, ce n’est pas un échec du calcul : c’est le résultat, et c’est ce qu’il faut dire à la D<sup>re</sup> Neri.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">03</span><h2 class="bloc-titre">Finir la réponse</h2><span class="bloc-heure">10 h 10</span><span class="bloc-min">20 min</span></div>
+<p class="objectif"><strong>Objectif</strong> Mettre la réponse dans la forme qui se défend.</p>
+<ol class="etapes"><li><strong>L’affirmation</strong> — accepter, refuser ou amender, en une phrase.</li><li><strong>Les éléments</strong> — des chiffres de votre clinique, chacun avec son calcul et son écran.</li><li><strong>La condition</strong> — ce qui doit être vrai pour que l’affirmation tienne.</li><li><strong>Le risque</strong> — ce qui la renverserait, et comment vous le verriez venir.</li><li><strong>Sur la carte</strong> — la flèche de votre grande boucle sur laquelle agit votre réponse, le délai qu’elle porte, et ce qui l’arrêtera : le plafond, ou la contrainte que le jeu nomme.</li></ol>
+<h3>Relisez avant de présenter</h3>
+<ul><li>Chaque chiffre est accompagné de son calcul, et vient de <em>votre</em> clinique.</li><li>Vous comparez l’année avec le projet à l’année sans lui — pas seulement au fait que le projet rapporte.</li><li>Votre condition est vérifiable : quelqu’un pourrait dire si elle est remplie ou non.</li><li>Vous dites de quel point de vue la réponse est bonne, et à quoi elle renonce.</li><li>Toute l’équipe prend la parole.</li></ul>
+<p class="fini"><strong>Vous avez fini quand</strong> les cinq points de relecture sont cochés.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">04</span><h2 class="bloc-titre">Présentations</h2><span class="bloc-heure">10 h 40</span><span class="bloc-min">45 min</span></div>
+<ol class="etapes"><li>Chaque équipe présente en dix minutes, puis cinq minutes de questions.</li><li>Quand vous écoutez une autre équipe, notez une flèche ou un chiffre qu’elle a vu et pas vous.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> les trois équipes ont présenté.</p></div>
+
+<div class="bloc activite"><div class="bloc-tete"><span class="bloc-num">05</span><h2 class="bloc-titre">Fin</h2><span class="bloc-heure">11 h 25</span><span class="bloc-min">5 min</span></div>
+<ol class="etapes"><li>Dans le jeu, <code>Exporter</code>. Entrez le <code>Code d’équipe</code> donné par votre enseignant.</li><li><code>Télécharger le JSON analytique</code>, et remettez le fichier à votre enseignant.</li><li>Votre enseignant ouvre la réponse ci-dessous.</li></ol>
+<p class="fini"><strong>Vous avez fini quand</strong> votre enseignant a reçu le fichier de votre équipe.</p></div>
+
+<div class="bloc"><div class="bloc-tete"><span class="bloc-num">06</span><h2 class="bloc-titre">La réponse</h2></div><div class="verrou" data-verrou="vendredi"><div class="verrou-l"><label><span>Code de l’enseignant</span><input type="text" inputmode="numeric" data-code></label><button class="btn" data-voir>Voir la réponse</button></div><p class="pq" data-msg></p><div class="reponse" hidden data-reponse></div></div></div>
+</div></section>
+<section class="jour" id="reference"><div class="colonne"><h1>Référence</h1><p class="chapeau">Les noms, les formules, et ce qui rend une proposition défendable.</p><div class="bloc"><div class="bloc-tete"><h2 class="bloc-titre">Les noms des concepts</h2></div><p>Chaque mot de ce carnet a une seule définition, et elle est ici. Le nom de gauche est celui que vous emploierez face à un banquier ou un associé ; celui du milieu est le terme anglais que vous rencontrerez dans la littérature ; la dernière colonne dit où lire le chiffre dans le jeu, ou s’il se calcule.</p><div class="defile"><table><thead><tr><th>En français</th><th>En anglais</th><th>Ce que c’est</th><th>Où le trouver</th></tr></thead><tbody><tr class="groupe"><th colspan="4">Penser la clinique : la carte</th></tr><tr><td><strong>Carte causale</strong></td><td class="en">causal map</td><td>Un dessin des causes et de leurs effets : des variables reliées par des flèches, chacune marquée S ou O.</td><td class="ou">— (se dessine)</td></tr><tr><td><strong>Variable</strong></td><td class="en">variable</td><td>Tout ce qui peut prendre une valeur différente d’une année à l’autre.</td><td class="ou">—</td></tr><tr><td><strong>S et O</strong></td><td class="en">same / opposite</td><td>Sur une flèche : S, les deux vont dans le même sens ; O, en sens opposé.</td><td class="ou">—</td></tr><tr><td><strong>Boucle causale</strong></td><td class="en">causal loop</td><td>Un dessin des influences entre variables, refermé sur lui-même.</td><td class="ou">—</td></tr><tr><td><strong>Stock</strong></td><td class="en">stock</td><td>Une quantité à un instant donné : la trésorerie, les clients, les heures disponibles.</td><td class="ou">En-tête › « Trésorerie »</td></tr><tr><td><strong>Flux</strong></td><td class="en">flow</td><td>Un rythme sur une période : les recettes de l’année, les cas traités, les coûts.</td><td class="ou">Gestion › la barre, repère « Recettes »</td></tr><tr><td><strong>Délai</strong></td><td class="en">delay</td><td>Le temps entre une cause et son effet. Il les fait apparaître sur deux années différentes.</td><td class="ou">—</td></tr><tr><td><strong>Plafond</strong></td><td class="en">ceiling</td><td>Une limite qui arrête une boucle : ici, le marché est fini.</td><td class="ou">Vue d’ensemble › bandeau du haut, sous « Demandes »</td></tr><tr><td><strong>Seuil de basculement</strong></td><td class="en">tipping point</td><td>Un niveau à partir duquel le comportement change d’un coup : sous 30, le climat de l’équipe fait partir quelqu’un.</td><td class="ou">Résultats › « Signaux de l’année »</td></tr><tr><td><strong>Périmètre</strong></td><td class="en">system boundary</td><td>La limite de ce qu’un modèle compte. Un chiffre incomplet n’est pas faux ; il est dangereux quand on l’oublie.</td><td class="ou">—</td></tr><tr><td><strong>Observation</strong></td><td class="en">observation</td><td>Ce qu’un écran montre. « La clinique perd de l’argent. »</td><td class="ou">—</td></tr><tr><td><strong>Explication</strong></td><td class="en">explanation</td><td>Une cause proposée pour une observation. Elle peut être fausse : elle se teste.</td><td class="ou">—</td></tr><tr class="groupe"><th colspan="4">Demandes, capacité, cas traités</th></tr><tr><td><strong>Foyers clients</strong></td><td class="en">client households</td><td>Les familles qui considèrent la clinique comme la leur. Chaque foyer fait plusieurs demandes par an : c’est pourquoi il y a plus de cas traités que de foyers.</td><td class="ou">Vue d’ensemble › bandeau du haut, case « Foyers clients » ; ce qu’ils deviennent, sous « L’an prochain »</td></tr><tr><td><strong>Demande</strong></td><td class="en">demand</td><td>Ce que les clients réclament, compté pour les services ouverts.</td><td class="ou">Vue d’ensemble › bandeau du haut, case « Demandes », et « ≈ x par foyer et par an » sur la flèche</td></tr><tr><td><strong>Demandes ouvertes</strong></td><td class="en">open requests</td><td>Les demandes qui portent sur un service que vous proposez. Celles qui portent sur un service fermé n’entrent dans aucun pourcentage.</td><td class="ou">Vue d’ensemble › bandeau du haut, case <code>Demandes</code></td></tr><tr><td><strong>Capacité</strong></td><td class="en">capacity</td><td>Le maximum réalisable avec le personnel, les compétences, les salles et les horaires.</td><td class="ou">Équipe et opérations › heures disponibles</td></tr><tr><td><strong>Cas traité</strong></td><td class="en">case served</td><td>Une demande réellement honorée.</td><td class="ou">Vue d’ensemble › bandeau du haut, case « Cas traités »</td></tr><tr><td><strong>Charge de l’équipe</strong></td><td class="en">team workload</td><td>La part des heures disponibles réellement employée.</td><td class="ou">Vue d’ensemble › carte « Charge de l’équipe »</td></tr><tr><td><strong>Contrainte</strong></td><td class="en">bottleneck, constraint</td><td>La ressource qui limite l’activité à un instant donné. Une seule à la fois. Aussi appelée goulot d’étranglement, ou facteur rare.</td><td class="ou">Résultats › <code>Contrainte principale</code>, une fois l’année passée ; avant, elle se déduit des salles et des heures, utilisées contre disponibles</td></tr><tr><td><strong>Décote de première année</strong></td><td class="en">ramp-up discount</td><td>Un service qui ouvre ne reçoit que 60 % de sa demande la première année, le temps que la clientèle l’apprenne. Juger un investissement sur sa première année, c’est le juger sur sa plus mauvaise.</td><td class="ou">se constate : passez une année avec un service neuf</td></tr><tr><td><strong>Climat de l’équipe</strong></td><td class="en">staff climate</td><td>Indicateur de 0 à 100. Il modifie l’absentéisme ; sous 30, quelqu’un démissionne en fin d’année.</td><td class="ou">Vue d’ensemble › carte « Climat de l’équipe »</td></tr><tr><td><strong>Confiance des clients</strong></td><td class="en">client trust</td><td>Indicateur de 0 à 100. Il modifie le nombre de demandes reçues.</td><td class="ou">Vue d’ensemble › carte « Confiance des clients »</td></tr><tr><td><strong>Signaux de l’année</strong></td><td class="en">signals</td><td>Après chaque année passée, une ligne par signal : ce qui a bougé, et ce que cela fait l’année suivante — des demandes refusées aux foyers partis, d’un climat bas au temps perdu par cas, d’une promesse manquée à sa conséquence. Chaque ligne mène à l’écran où l’on agit. C’est de là qu’on diagnostique l’année suivante.</td><td class="ou">Résultats › « Signaux de l’année »</td></tr><tr><td><strong>Engagement</strong></td><td class="en">commitment</td><td>Un objectif de la clinique, vu comme une promesse à quelqu’un — la banque, les clients, l’équipe, les confrères, la commune — qui réagit l’année suivante.</td><td class="ou">Vue d’ensemble › « Engagements »</td></tr><tr class="groupe"><th colspan="4">De l’activité au résultat</th></tr><tr><td><strong>Coûts variables</strong></td><td class="en">variable cost</td><td>Un coût que le cas lui-même fait apparaître : vaccin, réactif, fil.</td><td class="ou">Gestion › la barre, « Coûts variables »</td></tr><tr><td><strong>Coût fixe</strong></td><td class="en">fixed cost</td><td>Un coût qui existe que le cas ait lieu ou non : salaires, loyer, assurance.</td><td class="ou">Gestion › la barre, « Coûts fixes » (= coûts totaux − coûts variables)</td></tr><tr><td><strong>Ligne de dépense</strong></td><td class="en">cost line</td><td>Un type de dépense regroupé : les salaires, le loyer, les fournitures.</td><td class="ou">Résultats › « Comment le résultat se forme »</td></tr><tr><td><strong>Structure des coûts</strong></td><td class="en">cost structure</td><td>La répartition du coût total entre ses lignes de dépense, en pourcentage.</td><td class="ou">Résultats › « Comment le résultat se forme »</td></tr><tr><td><strong>Coût de la capacité inutilisée</strong></td><td class="en">cost of unused capacity</td><td>Ce que coûtent les heures payées et non employées.</td><td class="ou">Équipe et opérations › heures inutilisées</td></tr><tr><td><strong>Marge sur coûts variables</strong></td><td class="en">contribution margin</td><td>Ce qu’un cas laisse une fois payés ses coûts variables. Prix moins coût variable.</td><td class="ou">Soins et installations › Explorer les services › ligne « Argent restant après les fournitures directes »</td></tr><tr><td><strong>Taux de marge</strong></td><td class="en">contribution margin ratio</td><td>La part du prix qui reste après le coût variable. Sert à comparer des services dont les prix diffèrent.</td><td class="ou">se calcule</td></tr><tr><td><strong>Marge moyenne par cas</strong></td><td class="en">average contribution margin</td><td>La marge d’un cas « ordinaire » de la clinique, pondérée par le volume : chaque service compte à hauteur du nombre de cas qu’il traite. Avec un seul service ouvert, c’est sa marge à lui.</td><td class="ou">se calcule</td></tr><tr><td><strong>Seuil de rentabilité</strong></td><td class="en">break-even point</td><td>Le nombre de cas à partir duquel on ne perd plus. Aussi appelé le point mort.</td><td class="ou">se calcule</td></tr><tr><td><strong>Marge de sécurité</strong></td><td class="en">margin of safety</td><td>De combien l’activité peut chuter avant de repasser sous le seuil.</td><td class="ou">se calcule</td></tr><tr><td><strong>Résultat net</strong></td><td class="en">net result, net profit</td><td>Ce qui reste de l’année une fois tous les coûts et l’impôt payés. C’est le chiffre d’<em>une année</em> ; la trésorerie, elle, est ce qui reste en caisse.</td><td class="ou">Gestion › carte <code>Résultat net</code> — et dans <code>Impact du plan</code></td></tr><tr><td><strong>Marge par heure de la ressource rare</strong></td><td class="en">contribution per unit of the constraint</td><td>Ce que rapporte une heure de la ressource qui manque. Le critère de classement quand une ressource est rare.</td><td class="ou">se calcule</td></tr><tr><td><strong>Analyse de la contrainte</strong></td><td class="en">bottleneck analysis</td><td>La recherche de ce qui limite : le plus petit de ce que le temps permet et de ce que la demande permet.</td><td class="ou">Résultats › <code>Contrainte principale</code>, une fois l’année passée ; avant, elle se déduit des salles et des heures, utilisées contre disponibles</td></tr><tr class="groupe"><th colspan="4">Juger une décision</th></tr><tr><td><strong>Analyse différentielle</strong></td><td class="en">incremental analysis</td><td>La comparaison entre l’avenir avec le projet et l’avenir sans lui.</td><td class="ou">colonne de droite, <code>Impact du plan</code> › <code>Référence sans action</code></td></tr><tr><td><strong>Délai de récupération</strong></td><td class="en">payback period</td><td>Le nombre d’années avant de récupérer le montant investi.</td><td class="ou">se calcule</td></tr><tr><td><strong>Point d’indifférence</strong></td><td class="en">indifference point</td><td>Le niveau d’activité où deux options coûtent la même chose.</td><td class="ou">se calcule</td></tr><tr><td><strong>Coût pertinent</strong></td><td class="en">relevant cost</td><td>Un montant qui change selon l’option retenue. Lui seul entre dans la décision.</td><td class="ou">—</td></tr><tr><td><strong>Coût irrécupérable</strong></td><td class="en">sunk cost</td><td>Un montant déjà engagé, que plus aucune décision ne récupère. Il ne doit pas entrer dans le calcul.</td><td class="ou">—</td></tr><tr><td><strong>Coût d’opportunité</strong></td><td class="en">opportunity cost</td><td>Ce que rapporte la meilleure option à laquelle on renonce.</td><td class="ou">—</td></tr></tbody></table></div></div><div class="bloc"><div class="bloc-tete"><h2 class="bloc-titre">Les formules</h2></div><p class="form">marge sur coûts variables = prix − coût variable</p><p class="form">coûts fixes = coûts totaux − coûts variables</p><p class="form">seuil de rentabilité = coûts fixes ÷ marge moyenne par cas</p><p class="form">marge de sécurité = (cas traités − seuil) ÷ cas traités × 100</p><p class="form">marge par heure de la ressource rare = marge par cas ÷ heures de cette ressource</p><p class="form">délai de récupération = montant investi ÷ gain annuel</p><p class="form">point d’indifférence = (coût fixe 1 − coût fixe 2) ÷ (coût par cas 2 − coût par cas 1)</p></div><div class="bloc"><div class="bloc-tete"><h2 class="bloc-titre">Les engagements de la clinique</h2></div><p>Les objectifs de la clinique ne sont pas une note : ce sont des promesses à quelqu’un. Chaque année passée, chacun regarde si la sienne a été tenue, et réagit <strong>l’année suivante</strong>. On ne voit donc l’effet d’un engagement manqué qu’un an plus tard.</p><div class="defile"><table><thead><tr><th>À qui</th><th>Ce qui est promis</th><th>Tenu</th><th>Manqué</th></tr></thead><tbody><tr><td><strong>La banque</strong></td><td>un <strong>résultat net non négatif</strong> et une <strong>trésorerie positive</strong></td><td>emprunt à 6 %</td><td>un an : emprunt à 9 % ; deux ans de suite : nouvel emprunt refusé</td></tr><tr><td><strong>Les clients</strong></td><td>servir au moins <strong>82 %</strong> des demandes ouvertes</td><td colspan="2">les refus restants s’accumulent dans la pression d’accès ; au-dessus de 50, elle coûte de la confiance l’année suivante, promesse tenue ou non</td></tr><tr><td><strong>L’équipe</strong></td><td>une charge entre <strong>45 % et 94 %</strong></td><td>le climat tient</td><td>le climat baisse, puis les absences montent</td></tr><tr><td><strong>Les confrères</strong></td><td>au moins <strong>3 services</strong> prêts et dotés en personnel</td><td>soutien des référents +2</td><td>soutien des référents −1</td></tr><tr><td><strong>La commune</strong></td><td><strong>−15 %</strong> de carbone par cas traité, en gardant 80 % du volume initial, <em>et</em> une mesure de durabilité</td><td>une prime de 2 000 €</td><td>pas de prime</td></tr></tbody></table></div><p>Tenir une promesse en coûte souvent une autre : servir tout le monde charge l’équipe, protéger le résultat refuse des clients. Une promesse manquée revient, l’année suivante, dans les <code>Signaux de l’année</code>.</p></div><div class="bloc"><div class="bloc-tete"><h2 class="bloc-titre">Ce qui rend une proposition défendable</h2></div><div class="note-verte"><p><strong>Rien n’est noté</strong> : ni votre travail, ni les résultats financiers de votre clinique. Ces quatre questions servent à relire votre proposition avant de la présenter.</p></div><div class="defile"><table><thead><tr><th>Critère</th><th>Question à vous poser</th></tr></thead><tbody><tr><td><strong>Outils</strong></td><td>Le calcul retenu répond-il à la question de la flèche, est-il correctement appliqué, et appelé par son nom ?</td></tr><tr><td><strong>Ancrage</strong></td><td>Chaque affirmation se rattache-t-elle à un chiffre de votre propre clinique, avec son écran ?</td></tr><tr><td><strong>Raisonnement</strong></td><td>L’argument suit-il des flèches de votre carte, compare-t-il avec et sans la décision, et énonce-t-il sa condition ?</td></tr><tr><td><strong>Limites</strong></td><td>Dites-vous de quel point de vue vous jugez, et ce que votre carte laisse dehors ?</td></tr></tbody></table></div><p>Un argument solide fondé sur le bien-être animal ou sur ce qu’une équipe peut soutenir, sans aucun chiffre, est un raisonnement fort et un ancrage faible. Les deux comptent, séparément.</p><p class="surligne">Une recommandation différente de celle qui est proposée, correctement argumentée, vaut autant qu’une autre. Il n’y a pas de bonne réponse attendue.</p></div><div class="bloc"><div class="bloc-tete"><h2 class="bloc-titre">Quelques repères du jeu</h2></div><ul><li><strong>Heures supplémentaires</strong> — au-delà de 100 % de charge, payées 1,25×, suivies d’absences accrues l’année suivante.</li><li><strong>Climat de l’équipe</strong> — indicateur de 0 à 100 ; sous 30, quelqu’un démissionne en fin d’année.</li><li><strong>Première année d’un service</strong> — il ne reçoit que 60 % de sa demande.</li><li><strong>Confiance des clients</strong> — indicateur de 0 à 100 ; sous 45, des clients partent chaque année ; sous 35, ils partent vite ; au-dessus de 65, le bouche-à-oreille en amène. Elle fait aussi monter ou baisser le prix que vos clients acceptent.</li><li><strong>Clients</strong> — leur nombre fait toute la demande ; il se lit dans le bandeau du haut de la vue d’ensemble, case <code>Foyers clients</code> ; celui de l’an prochain, sous « L’an prochain ». Un foyer fait plusieurs demandes par an.</li><li><strong>Familles refusées</strong> — sur cent demandes refusées, six foyers partent pour de bon, avec toutes leurs autres visites. Une clinique qui refuse trop cesse de grandir, puis rétrécit.</li><li><strong>Équipe fatiguée</strong> — sous 50 de climat, chaque point en moins ajoute 0,4 % de temps à chaque cas, pour l’équipe comme pour la salle : un climat bas coûte des cas même quand la salle est pleine.</li><li><strong>Pression d’accès</strong> — les demandes refusées qui s’accumulent : elle suit la part refusée avec un temps de retard ; au-dessus de 50, elle coûte de la confiance chaque année.</li><li><strong>Soutien des référents</strong> — les confrères qui vous adressent imagerie et chirurgie : il monte quand vous servez ces cas et avec « Développer les référents », il s’érode sans eux ; chaque point au-dessus de 50 apporte 1 % de demandes avancées en plus.</li><li><strong>Empreinte par cas</strong> — si elle baisse d’une année à l’autre, la confiance des clients monte ; si elle monte, elle baisse.</li><li><strong>Étude du marché local</strong> — elle achète de l’information, pas des clients : sans étude, le prix accepté n’est connu qu’à ±20 % ; l’étude par l’équipe le resserre à ±8 %, celle d’un cabinet le donne exactement.</li><li><strong>Prix accepté par vos clients</strong> — il dépend du type de clients visé et de leur confiance ; un prix au-dessus coûte des demandes et de la confiance chaque année.</li><li><strong>Rythme rapide</strong> — 20 % de temps en moins par cas, mais 10 % des cas reviennent, non payés ; la confiance baisse et le climat de l’équipe perd un point par an.</li><li><strong>Durée d’une décision</strong> — chaque décision porte sa mention : <code>Une fois</code>, <code>Chaque année</code>, ou <code>Jusqu’au prochain changement</code>.</li></ul></div></div></section>
+<section class="jour" id="outils"><div class="colonne"><h1>Outils</h1><p class="chapeau">Page non listée : sert à préparer les réponses de la semaine suivante.</p><div class="bloc"><div class="bloc-tete"><h2 class="bloc-titre">Encoder une réponse</h2></div><label><span>Code du jour</span><input type="text" data-enc-code value="12345"></label><label style="margin-top:10px"><span>Le texte de la réponse (HTML autorisé)</span><textarea data-enc-texte rows="6"></textarea></label><p><button class="btn" data-encoder>Encoder</button></p><label><span>À coller dans data-reponse</span><textarea data-enc-sortie rows="4"></textarea></label></div></div></section><div class="colonne" style="margin-top:20px"><footer><p>Carnet · Gestion de la clinique vétérinaire · Faculté de médecine vétérinaire. Chiffres vérifiés contre le modèle le 2026-10-14.</p></footer></div>
+</main>
+<aside class="rail" id="rail"><div class="rail-tete"><h2>Les calculs</h2><button class="btn creux" data-rail-fermer>Fermer</button></div><p class="rail-note">Ouvrez-les quand vous voulez, n’importe quel jour. Chaque calcul porte son nom réel : c’est celui-là que vous emploierez face à un banquier, un associé ou un confrère.</p><details class="calc" data-calc="struct" open><summary><span class="nom-outil">Structure des coûts</span><span class="sous-outil">quelle part du total pèse une ligne de dépense</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> les cases de coûts. Quelle ligne pèse le plus ?</p><p class="form">part = une ligne de dépense ÷ le total × 100</p><div class="champs"><label><span>La ligne de dépense (€)</span><input type="number" step="any" data-in="montant" data-champ="struct.montant"></label><label><span>Le total (€)</span><input type="number" step="any" data-in="total" data-champ="struct.total"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Un montant seul ne veut rien dire. 103 700 €, est-ce beaucoup ? Rapporté au total, c’est deux tiers — et on ne redresse pas une clinique sans toucher à ce qui pèse deux tiers.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Il vous dit par quelle ligne de dépense commencer, et lesquels ne méritent pas la réunion.</p></details><details class="calc" data-calc="capacite"><summary><span class="nom-outil">Coût de la capacité inutilisée</span><span class="sous-outil">ce que coûtent les heures payées et non employées</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la case Capacité. Que vaut ce qui ne sert pas ?</p><p class="form">heures inutilisées × coût horaire · taux d’utilisation = heures utilisées ÷ heures disponibles</p><div class="champs"><label><span>Heures disponibles</span><input type="number" step="any" data-in="dispo" data-champ="capacite.dispo"></label><label><span>Heures utilisées</span><input type="number" step="any" data-in="utilisees" data-champ="capacite.utilisees"></label><label><span>Salaire annuel (€)</span><input type="number" step="any" data-in="salaire" data-champ="capacite.salaire"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Une heure payée et non employée coûte exactement autant qu’une heure travaillée. Tant qu’on ne la convertit pas en euros, elle reste invisible dans les comptes.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Ces heures sont une capacité déjà payée : ce que vous pouvez ouvrir sans embaucher personne.</p></details><details class="calc" data-calc="marge"><summary><span class="nom-outil">Marge sur coûts variables</span><span class="sous-outil">ce qu’un cas laisse après ses coûts variables</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la flèche Cas traités → Recettes. Que laisse un cas ?</p><p class="form">marge = prix − coût variable · taux de marge = marge ÷ prix</p><div class="champs"><label><span>Prix (€)</span><input type="number" step="any" data-in="tarif" data-champ="marge.tarif"></label><label><span>Part des coûts variables (%)</span><input type="number" step="any" data-in="fournitures" data-champ="marge.fournitures"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Le prix n’est pas ce que vous gardez. La marge sur coûts variables est la seule partie du prix qui puisse payer les salaires et le loyer. C’est le chiffre de base de toute décision d’activité.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Sans elle, vous ne pouvez ni comparer deux services, ni savoir combien d’cas il vous faut.</p></details><details class="calc" data-calc="seuil"><summary><span class="nom-outil">Seuil de rentabilité</span><span class="sous-outil">le nombre de cas à partir duquel on ne perd plus</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la flèche Cas traités → Résultat net. Combien de cas faut-il ?</p><p class="form">seuil = coûts fixes ÷ marge moyenne par cas · coûts fixes = coûts totaux − coûts variables · marge moyenne = (recettes − coûts variables) ÷ cas traités</p><div class="champs"><label><span>Coûts totaux (€)</span><input type="number" step="any" data-in="total" data-champ="seuil.total"></label><label><span>Coûts variables (€)</span><input type="number" step="any" data-in="directs" data-champ="seuil.directs"></label><label><span>Recettes (€)</span><input type="number" step="any" data-in="recettes" data-champ="seuil.recettes"></label><label><span>Cas traités</span><input type="number" step="any" data-in="traites" data-champ="seuil.traites"></label><label><span>Marge moyenne par cas (€) — laissez vide si vous avez rempli les recettes</span><input type="number" step="any" data-in="marge" data-champ="seuil.marge"></label></div><p class="sur-carte"><strong>Pour une décision :</strong> mettez le coût fixe qu’elle ajoute dans « Coûts totaux », 0 dans « Coûts variables », et votre marge moyenne par cas. Le résultat est le nombre de cas qu’elle doit apporter pour payer ce qu’elle coûte.</p><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Le seuil transforme une inquiétude en quantité. « On perd de l’argent » n’est pas une consigne de travail ; « il nous manque tant de cas » en est une.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Il donne l’échelle du problème, donc le type de décision qui peut le résoudre : un horaire, ou un service entier.</p></details><details class="calc" data-calc="securite"><summary><span class="nom-outil">Marge de sécurité</span><span class="sous-outil">de combien l’activité peut chuter avant de repasser sous le seuil</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la même flèche. Quelle erreur peut-on se permettre ?</p><p class="form">marge de sécurité = (cas traités − seuil) ÷ cas traités × 100</p><div class="champs"><label><span>Cas traités</span><input type="number" step="any" data-in="traites" data-champ="securite.traites"></label><label><span>Seuil de rentabilité</span><input type="number" step="any" data-in="seuil" data-champ="securite.seuil"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Tous vos autres calculs donnent une valeur unique, comme si l’avenir était connu. Celui-ci dit ce que cette valeur supporte d’erreur — c’est la seule façon honnête de présenter une prévision.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Une décision qui ne tient qu’à un scénario parfait n’est pas une décision, c’est un pari. La marge de sécurité vous dit lequel des deux vous proposez.</p></details><details class="calc" data-calc="facteur"><summary><span class="nom-outil">Marge par heure de la ressource rare</span><span class="sous-outil">ce que rapporte une heure de la ressource qui manque</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la flèche Capacité → Cas traités. Que rapporte une heure de ce qui manque ?</p><p class="form">marge par cas ÷ heures de cette ressource par cas</p><div class="champs"><label><span>Marge par cas (€)</span><input type="number" step="any" data-in="marge" data-champ="facteur.marge"></label><label><span>Heures de la ressource rare par cas — pas la somme des deux</span><input type="number" step="any" data-in="heures" data-champ="facteur.heures"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Quand ce qui manque est du temps et non des clients, la bonne question n’est plus « combien rapporte un cas » mais « combien rapporte une heure de ce qui manque ». C’est le critère de classement en situation de ressource rare.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Le classement s’inverse par rapport à la marge par cas — et c’est celui-ci qui décide lesquels ouvrir.</p></details><details class="calc" data-calc="goulot"><summary><span class="nom-outil">Analyse de la contrainte</span><span class="sous-outil">ce que la ressource peut produire, et qui limite</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la case Capacité, ouverte en détail. Qu’est-ce qui limite ?</p><p class="form">le plus petit de : ce que le temps permet, ce que la demande permet</p><div class="champs"><label><span>Heures disponibles</span><input type="number" step="any" data-in="dispo" data-champ="goulot.dispo"></label><label><span>Heures par cas</span><input type="number" step="any" data-in="parCas" data-champ="goulot.parCas"></label><label><span>Demandes du service</span><input type="number" step="any" data-in="demandes" data-champ="goulot.demandes"></label><label><span>Première année du service ?</span><select data-in="premiere" data-champ="goulot.premiere"><option value="non">non — 100 % de la demande</option><option value="oui">oui — 60 % de la demande</option></select></label><label><span>Marge par cas (€)</span><input type="number" step="any" data-in="marge" data-champ="goulot.marge"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Trois choses doivent tenir ensemble : le temps que vous avez, ce que les clients demandent, ce que le cas laisse. La plus petite décide — et c’est elle, la contrainte.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Nommer la contrainte évite la dépense la plus courante : payer pour élargir ce qui ne limitait rien.</p></details><details class="calc" data-calc="differentiel"><summary><span class="nom-outil">Analyse différentielle</span><span class="sous-outil">l’écart avec l’année que vous auriez eue sans le projet</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> deux versions de toute la carte, avec et sans la décision. Laquelle vaut mieux ?</p><p class="form">écart = résultat avec le projet − résultat sans le projet · délai de récupération = montant investi ÷ gain annuel</p><div class="champs"><label><span>Résultat sans le projet (€)</span><input type="number" step="any" data-in="sans" data-champ="differentiel.sans"></label><label><span>Résultat avec le projet (€)</span><input type="number" step="any" data-in="avec" data-champ="differentiel.avec"></label><label><span>Montant investi (€)</span><input type="number" step="any" data-in="mise" data-champ="differentiel.mise"></label><label><span>Gain annuel ensuite (€)</span><input type="number" step="any" data-in="suite" data-champ="differentiel.suite"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> La question n’est pas « est-ce que ça rapporte ? » mais « est-ce que ça rapporte plus que de ne rien changer ? ». Seuls les montants qui changent entre les deux options comptent — ce sont les coûts pertinents.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> C’est la différence entre « ça rapporte » et « ça rapporte plus que l’autre option ». Seule la seconde est une décision.</p></details><details class="calc" data-calc="indifference"><summary><span class="nom-outil">Point d’indifférence</span><span class="sous-outil">le niveau d’activité où deux options coûtent la même chose</span></summary><p class="sur-carte"><strong>Sur la carte :</strong> la forme des coûts d’un choix de capacité. À partir de quel volume une option passe-t-elle devant ?</p><p class="form">point d’indifférence = (coût fixe 1 − coût fixe 2) ÷ (coût par cas 2 − coût par cas 1)</p><div class="champs"><label><span>Option 1 · coût fixe annuel (€)</span><input type="number" step="any" data-in="f1" data-champ="indifference.f1"></label><label><span>Option 1 · coût par cas (€)</span><input type="number" step="any" data-in="v1" data-champ="indifference.v1"></label><label><span>Option 2 · coût fixe annuel (€)</span><input type="number" step="any" data-in="f2" data-champ="indifference.f2"></label><label><span>Option 2 · coût par cas (€)</span><input type="number" step="any" data-in="v2" data-champ="indifference.v2"></label></div><output data-out>…</output><p class="pq"><b>À quoi sert ce calcul.</b> Deux options ne se départagent pas dans l’absolu : l’une gagne en dessous d’un certain volume, l’autre au-dessus. Le point d’indifférence est ce volume.</p><p class="pq"><b>Ce qu’il change pour votre décision.</b> Il remplace « je pense que » par un seuil : au lieu de défendre une option, vous dites à partir de quand elle devient la bonne — et vous pouvez alors discuter du volume, qui est vérifiable.</p></details></aside>
+</div></div>
+<script>
+(function(){
+"use strict";
+// L'etat se porte sur <html> : les onglets sont dans l'en-tete et la poignee hors du
+// conteneur, aucun selecteur descendant du conteneur ne peut les atteindre.
+const RACINE = document.documentElement;
+const marquer = (classe, etat) => RACINE.classList.toggle(classe, etat);
+marquer("interactif", true);
+const CHIFFRES = {
+  "an1": {
+    "net": -64969,
+    "recettes": 91488,
+    "coutsTotaux": 156457,
+    "coutsDirects": 11857,
+    "salaires": 103700,
+    "installations": 26000,
+    "coutsFixes": 144600,
+    "seuil": 3462,
+    "margeMoyenne": 41.78,
+    "traites": 1906,
+    "ouvertes": 1906,
+    "marche": 10606,
+    "nonProposees": 8700,
+    "contrainte": "demandMet",
+    "climat": 49,
+    "confiance": 53
+  },
+  "equipe": {
+    "vetNom": "Dr Amina Kone",
+    "vetDispo": 1421,
+    "vetUtilisees": 1048,
+    "vetInutilisees": 373,
+    "vetSalaire": 56000,
+    "supNom": "Maya Chen",
+    "supDispo": 1421,
+    "supUtilisees": 0,
+    "supInutilisees": 1421,
+    "supSalaire": 29000
+  },
+  "an2": {
+    "net": 33825,
+    "traites": 4155,
+    "contrainte": "roomFull",
+    "salleSaturee": "consult",
+    "refusees": 146
+  },
+  "proposition": {
+    "neriSalaire": 68000,
+    "neriAnnonce": 500,
+    "soutienImagerie": 1500,
+    "salleAmenagement": 5200,
+    "salleLoyer": 5200,
+    "appareilAchat": 21000,
+    "appareilLocation": 12000,
+    "formationCout": 4200,
+    "formationHeures": 56
+  },
+  "services": [
+    {
+      "id": "consult",
+      "nom": "Consultation générale",
+      "tarif": 48,
+      "fournitures": 0.12,
+      "marge": 42.24,
+      "hVet": 0.55,
+      "hSoutien": 0,
+      "demandes": 1906
+    },
+    {
+      "id": "vaccination",
+      "nom": "Vaccination",
+      "tarif": 58,
+      "fournitures": 0.22,
+      "marge": 45.24,
+      "hVet": 0,
+      "hSoutien": 0.34,
+      "demandes": 1440
+    },
+    {
+      "id": "preventive",
+      "nom": "Soins préventifs",
+      "tarif": 72,
+      "fournitures": 0.2,
+      "marge": 57.6,
+      "hVet": 0.25,
+      "hSoutien": 0.47,
+      "demandes": 1103
+    },
+    {
+      "id": "surgery",
+      "nom": "Chirurgie courante",
+      "tarif": 420,
+      "fournitures": 0.36,
+      "marge": 268.8,
+      "hVet": 2.6,
+      "hSoutien": 2.6,
+      "demandes": 250
+    },
+    {
+      "id": "lab",
+      "nom": "Analyses de laboratoire",
+      "tarif": 86,
+      "fournitures": 0.28,
+      "marge": 61.92,
+      "hVet": 0,
+      "hSoutien": 0.38,
+      "demandes": 657
+    },
+    {
+      "id": "ultrasound",
+      "nom": "Échographie",
+      "tarif": 145,
+      "fournitures": 0.22,
+      "marge": 113.1,
+      "hVet": 0.82,
+      "hSoutien": 0.45,
+      "demandes": 382
+    },
+    {
+      "id": "dentistry",
+      "nom": "Détartrage dentaire",
+      "tarif": 205,
+      "fournitures": 0.3,
+      "marge": 143.5,
+      "hVet": 1.35,
+      "hSoutien": 1.08,
+      "demandes": 351
+    },
+    {
+      "id": "emergency",
+      "nom": "Consultation d’urgence",
+      "tarif": 150,
+      "fournitures": 0.18,
+      "marge": 123,
+      "hVet": 1,
+      "hSoutien": 0.4,
+      "demandes": 381
+    },
+    {
+      "id": "radiography",
+      "nom": "Radiographie",
+      "tarif": 120,
+      "fournitures": 0.25,
+      "marge": 90,
+      "hVet": 0.19,
+      "hSoutien": 0.36,
+      "demandes": 467
+    },
+    {
+      "id": "hospital",
+      "nom": "Hospitalisation / soins de jour",
+      "tarif": 180,
+      "fournitures": 0.32,
+      "marge": 122.4,
+      "hVet": 0.45,
+      "hSoutien": 1.8,
+      "demandes": 297
+    },
+    {
+      "id": "orthopedic",
+      "nom": "Chirurgie orthopédique",
+      "tarif": 950,
+      "fournitures": 0.42,
+      "marge": 551,
+      "hVet": 4,
+      "hSoutien": 4,
+      "demandes": 116
+    },
+    {
+      "id": "pharmacy",
+      "nom": "Délivrance pharmaceutique",
+      "tarif": 42,
+      "fournitures": 0.62,
+      "marge": 15.96,
+      "hVet": 0,
+      "hSoutien": 0.12,
+      "demandes": 1491
+    },
+    {
+      "id": "retail",
+      "nom": "Nutrition et vente",
+      "tarif": 35,
+      "fournitures": 0.68,
+      "marge": 11.2,
+      "hVet": 0,
+      "hSoutien": 0.02,
+      "demandes": 957
+    },
+    {
+      "id": "boarding",
+      "nom": "Pension",
+      "tarif": 48,
+      "fournitures": 0.35,
+      "marge": 31.2,
+      "hVet": 0,
+      "hSoutien": 0.35,
+      "demandes": 808
+    }
+  ]
+};
+
+// Les cinq codes de la semaine. Un seul endroit. À changer avant chaque promotion.
+const CODES = {lundi:"12345",mardi:"12345",mercredi:"12345",jeudi:"12345",vendredi:"12345"};
+const REPONSES = {"lundi": "DUINCEZFQFxaUg9+UhRWUEBHURkRV10URUPxmkJcQltcWhVBXUZGFV3Qs61UX1zwnVARAx0IGkJGQVtbVgwTZEdYShMADRHQsZgV84UTUFBcU11QUEISAhQMAQQTW0BHV0FAUEIeE1FBEQoTAwUBEg9RWA9cXFoVQUBcRFpC8ZpRRg0dVlkLEfCEFFZQQlJXXEXxmhQPEVFbVUdWVxNQUBFe0bSs8ptCQVxBVxMHAhEXE/aCEVFSRxVFQFJdQfKbQBQEEQsDAhXzhRNGUFJXR0BQQhIKBRUFCgsU17OeE/aCEVFc945FQRNCVENbUlZZVEETBQQRCgYDFdOwnxT3hhJQW/aKRkAUU1hKVkcVAAcFFAEEBRPWvaMSAgUVCQcEFAgRAwcAFQcCAxTXs54T9oIRQPCdRkReR1VBEVxWQBXTuqECARELBQ0V07CfFPeGEkdG9phBXEZQQ1tWFAwEEgMHBBHQsZgbEX5WRxVVV0ZMFUJGXFdeQhIJFFlQEkdG9phBXEZQQ1tWFFBFEl9VFVJTQ1VWWEbwnRUZXlZHFVlXRkZQQhJXXUZBXV1dV11XQB0bEWZcQUERXlYUR1RBR1EVVEFHFEBfElVYQEkcDxtFDw5DCglCRkFbW1YMAhT3hhJ395xSQFpGUB8OHEdBQ11dUwsRYVIURUPxmllcQkFWFFBCRhNSVERBQFEbEX5SFFZZU0FTUBFWVhRZ07Kq95xAR1pEUBFXQEAVVVcTCEZFQFxaUg8BBBQQDR1AQEdeXFQKFQsSflVMUBJwXFBfEl3WtahHR11ZWEFWFFREUUZaUBFWVhRGVEETBRUFAAIUXVRHQVFGHRJfVRVH8ZpA9phAWlpUWEBWFFBfEkZAXF1bQFEVABIDAA0RQUZGFQASBwYEHxLxnxVhXlZdW1QSUFVFUFFaQPaYEvGPFVXxmldHWEYTWFBCEg9RWA9WVllUX1ZWRxVVV0AURlRARV1WVEETW0BHV0FARg0dVlkLEdCzoBVdUxNXWVhcWkVAVBJAUUdFEgIEBREXE1BQEVFWFERE0LOtUF1eVhRFQ11DW0ZUEtG0oRFCUkcVXVcTQFBcQkAUUVQSX9a1qPGaRUBYQlYaCR5CDQhFDw5AQEdeXFQKBxHwhBRmWEZGUUcfDhxHQUNdXVMLEWJBXU0R0LWmFWNXUFFBRVdAFB1iGxNRQRFiQV1NEdC1phV1V15VW1VXQBQdfhsdFHlQEltVQEJBVhRBWEBWFFFQXEAUUVRHSxRGVFxAFA8RQl9BRhFCUkYVUlNAGBVcXVpaRhFWVhRWUEEdFHlUEkH3nEJHX0BURRJX95xBV11QFVVXE1hUEVRf951SWlYURERbE1jXsatWWUVeQEdRGw0dQwoJQQwPR0FDXV1TCwIS8YMVdEpDWFxAR1ZGGw0dQEBHXlxUChViWxNYUEISQ0ZcSRLwnUFQW1ZaQRFeUhRWUEdAURkRGQEEFRQSUFtYU15WRlRYRhNY17GrVkdGVFxHXVBdEldRFV1TE0RQQ0ZWGhViWxNY17Gr8J1WUEBHFFBCRhNEUEVbRxgVXdCzrVBJQl9dVlBGWltbEVxWFEFYV11AFUFTQBoJHkINCEUPDkBAR15cVAoBEfCEFHZZW1VSR1RAHQgaQkZBW1tWDBNnVF1TWkZQQhJWQBVSWlJGUlRBEw4VAAIAFAIBAhPWt50SQEFHEQMGAhUFBwQU17OeE1BQEVFc945FQRNAWkVTRkwZEUFcXUERDkBAR15cVAoDBxIWCBpCRkFbW1YMExxZVBJAVVlQW0FRFVVXE3lUSFMTR1BEXhMOFQALExEV07KnFEBfElRGWkRCVhRERFsTRvaYQlxaUREDChQQEVMTV11YVFVG9pgSRlpQEUJWRkZeXF1RHB8Se1FAQ1dAFEVQS/CdUEISQkFcEVxWFEZUQEVRW0USQ1VGEQgTeVRIUxMFFQUAAhRdEfGkFAcBHgcFFdOwnxtdEQ8TCEZFQFxaUg8AChQFAQIT1redDhxHQUNdXVMLEQkTWFQRRPCdQfKbQV1bUFtBURUCBQAUXRHxpBQGCB4HBRXTsJ8bXREPEwhGRUBcWlIPAwcUAgECE9a3nQ4cR0FDXV1TCxEJE1FbQldeVllUEg9HQUNdXVMLBQETAwUBEtG2mQ0dQEBHXlxUChkRQVxdQREEBBQQEVZWFFlQEkNRR0VXE1BQEV7RtKxQXF33nFQcDxtFDw5DCglCRkFbW1YMBhT3hhJwW1hBU0FRRx8OHEdBQ11dUwsRcVxaRkReR1VBWF1dFPaREgYMFdOwnxQPEWDwnVPym0FRW1JXE9a9owQHFAwHCxPWt50eE2RZUFxaUlzymxMIRkVAXFpSD9C7pgAIEgMMBBHQsZgJHkFHRlpfVQ0YFfKbUFVHRRIPR0FDXV1TCxoHEwwNCRLRtpkNHUBAR15cVAobEX5SFF1QR0BHUBEOVlkLUF/wnVlYXUFRCR5XXgoVXVcTRvaYQUZYQVBGEw4VXVdAFEdUUVZAQVRBE1laX0ZWWkERGgoFFQUKCxTXt6ATDQ0RAAYGFdOwnx0VQV5GRxVAR1YUWVRBE1dUQhJdURVTU1pHRlRcRxQdABIKBAMR0LWmFQASBQ0BGBwTYVsRVUFbQEFXE0VAWBJXXUER8JgUXF0SUhRBXkBHFPeKEkBVW0ISXUFUX1FWFEZUQFIUVl5cR0ZQVVtHFEVQQBNYUBFYVkEbEXdfWFARUVxZV11XEw0VFBJXQRVFQFxBGRFXRxRZUFtAR1ARBwoUBQkDE9a3nRJXURVBV0FAUB8OHEQLDUINCEZFQFxaUg8EE/aCEXFSUEdUQB0IGkJGQVtbVgwTYkARVlZHFVJdXkRBVEEfFFbTsqpRRkUSXl1QREodFGNEEldRFV3Qs61UUlHwnEYRU0ZMFUJdWlpGHRJQ1rWoV0BAFVxdWlpGEVBaUVsRCBMGBAMSUlpcXFNGTBVVVxNZWlhcQBoVfVdAFEVeW11ARhFWVhRDRFcTUFxHV0FTUF9GHxRQRRJfURVbV0YUW1QSR0ZUX1FbURVBU0AaCR5CDQhFDw5AQEdeXFQKAhHwhBRlQ11DW0ZUQA8bRkVAXFpSDxIbQVsRV0tRWEFeVh0bEQ5WWQtwVFVdR1xTR11aXw4cUVgPEgkUWVASW1VAQkFWFFvTsqpRRkUSQ1VGEV5SFEfym0NbW0JXHRQJVF8N97xd8ZpZUF9GQAgaVF8NFA8RGQYUDQkKE9a3nRJAQUcRR11RFUFXQUBQEVZWFAMFEgoCDBHQsZgVChIHBxUGAgMU17OeE1DXsatbUUBDV0AUUfKbWfeVEUJSTfaYV0AURERbE1pQEUJBW1FEW0BRW0USQV1QXxIIFA0RBQMEFVVXXlVbVVdAFFteXBNER15CXEf2mFdAGhUNV14Kdl5cV11BWF1dCBpUXw0UDxFBWhRWVEETXFBEQFZHFUFXRkJQX0YTR1BDRFpGFfKSE1BQQhJAUUdHW1BRRhFDRlEVXVdAFFZdW1ZaQUISV1FYUFxXUVtFElf3nFvxkxoVDVdeCmdYQUJBUA0dVlkLEQgTW0BHQFpGFURcE0dQQ0RaV1ARUVz3jkVXE1VDUFxHFFFUEkFVRUFdQUBQQxIIFFlQEkNGUFxb8JxHVBJSWlvym1YUWVQSV11HUBwPG0UPDkMKCUJGQVtbVgxwURVAR1YUWVRBE1NHXkdDUUYRX1JaRERXXUAVXVcTRFlEQRNHWkREVlpBDR1AQEdeXFQKFQsSAg0VFBJSQRVdW1ZBFVVXEwIDERcTDxVeR1FYXFRAE1hQQhIAAwYRWlZBR1RBE1BQEV5SFEPym0f3nENbXVVcQ1cTDxVdW0FRFV1XE0b2mEFGWEFQRhNkWVBcWlJc8psTVUARXlpRQBFWVhRZ07KqCFBcDPCdVlBARwgaVF8NFA4RVvCdVl1TQVFHEV7RtKxQQUBbVljxmhRRUFxAFFnTsqpRR0NXRkYVQlNdRxVFV0BAUEMSCBRb07KqVUNeW0EUX1BfUl1GEVFaQPaYEl9RRhEKEwMFARJXUVhQXFdRRhFcXFoVQUBcRFpC8ZpRRhEJE1BUX0ETWFARWFxBR19TXxgVUl1eRFRDV0EUWdOyqlVbX/GaURUDEvCUFV3Qs61UX1zwnVARAxNVQBFeWlFAEVZWFGVdU11dU1jxmhT2kRJh95xX8ZpGUF9RVhoJHkIN", "mardi": "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", "mercredi": "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", "jeudi": "DUINfVkRXNG0rEgSUhRFUEETUFARUFxaW1QSQfecQV1dR1AR8ZMUVl5RW1FHEVNGXlpEQFfWtahaRl0bEXFWFEREWxNXWlxCR1EVCxJXUUYRQltGVEJXQBRRRBJDRlRFW1BdUF8SXVtB8ptWRxVQRFZXFUJXQBRYXkZAGBVBXlJX9phXQBRRVFZSWkYRXUYUXV5AQBRRRBJHRlRYRhNAR1BR8J0VXFNBUFwdElZAFURcE0RHVF9aUUcRWFZAFUBHWhRRWEYTUVtXW10UUVQSQkFQXRJDW1xfRhNQUBFERlEVWF4TXkBWVx0IGkEMD0QLDUFHRlpfVQ13UBFDRl0VQ1dAQFARVlZcWkNBHxRY8pheURVQQkH3nUISXlVHVVsTDgkeQUdGWl9VDRRZVBJRXVBfH/CeQUNXE1VbWF9SWBUKElBRFUBH0bSsRFwTV1RCElZMXFZXE1BQEV5SFEVUQEBbW19XE0VAWBJfURVFQFJdQVQeE1VAHFZWWPaREldRRhFaVkFHVEETDxVSVxNFQNOyqkFbEVFfXVBfRhNGUFdHQPecEUBSV1pfRlYUVERGXEFHEVZWFFlEWxMPFVRGE1hQQhJXUVhQXFdRRhFDRlEVXVMTV1lYXFpFQFQSXVEVQUBcRFpCVxNEVEIeE0VAWBJdURVSXV5EQVRcRxRFUEETUFRfQRNYVBFRXFpTWFNdV1ARVlZHFVJeWlFbRUEdCBpBDA9ECw1BR0ZaX1UNd1ARQ0ZRFV1XE1laVfGbWFARQVJdRlhGE1daQ0BWV0FUX1ZaQREIDxtGRUBcWlIPEkJB17GrRlpQEUFSWFlUEkZaXEBHVhRFXVNVW1tfVxNEWURBWlFAQ0ETR1BDRFpXUEIS8JQVXVMTUlpYQRMPFUBH0bSsRFwTR1BDRFpXUBFcVkFTEV9WQBVEXBNVWxHxkxRURUZWXVtVQFYURlASV1FYUFxXURUKEkJB17GrRlpQEfGaRUBYQlYUUF8SW1FAQ1dAFEZEQkNY9phfVlpBUFtBUUYRXlYURVBbVhRZ07KqVVtf8ZpRFUJHWkJUX0ZWFFBfElJWRlRcUFFGHw4cRAsNQg0IRkVAXFpSD35WRxVTXV1aUEISQkFQQkZaW1tCDhxHQUNdXVMLEV1dQBVVV15VW1XxmhRAX1cTXFxCRlxdR1QS0bShEVFcWVhUXEcUXF0SXEZSUFxaR1RYRhNHWl8SR1FYQUEfFFZeX15RW0USWlgVUBJX95xSW1f3nBFW0bSsXkdFRlxDEkZaFUJXQUJcUlcfFFZUEkJB17GrWlgVQ1dVUUdQW0cUVERGQVFYVFxHGhVkXFYUXVhBR1tcQ1cTRUBYElBbW0VAVlBcRRJFW0FDVxNXVENGVhRDUEdHFEVdR0AURETQs61AXxJSV1ZeQFcURV5eWhQPEVHRtKxUQUcUQF9XE1hcXFtHURVAR1YUQ15HQBRFXkdFUU8RXFxZWFRAE0JQX1ZBUVFYHA8bRQ8=", "vendredi": "DUINdUBSR10UWF5cR1VbRRJd1rWoV0BAFVVdXVr2mBJaV1wRCBNYUBFRW11TV0BWFF9EQUdRFVRBRxRWVF5GXRVVVxMIRkVAXFpSD0RcQEdUDhxHQUNdXVMLEVFfXVtYQ0ZRGRFCUkcVVdCzrUBfVxNXWVhcWkVAVBJeW1Hyml9RGw0dQwoJQQwPR0FDXV1TC31TE1n2mEZbW1FUHA8bRkVAXFpSDxJwW1hBU0FRTxFGXEFfXkdBRxXykhP2nhFcVhRHWFddFFNQW0FRFfOJHxRfUF9SXUYR8ZMUT/KbQVsZEVdHFEZEQBNAR15bQBRUX0EdFGVeR0EUQF9XE1BQXFNdUFAR8ZMUDQESFhRaRBIFBBUUHhNGUEVbQVFPEVZWFFnTsqr3nFJTQUAVXVMTWVRDVVYUUVRBE1dUQhJX1rWo8ZpXXV5VQVVFWVtWFEREWxNZVF9DRlFbRRIJFFlUQRNXWvKJR0cVV1tLUUYRVkYURUNdWVFBEdCzoBVdXUpRRxFWVhRZUBJAVVldVx8UVEFCUkZQWF4fFEZQXlJdR1QS8J1DVFxHQVBdEtG0oRFAVkdBVFxHFFBfRlpRR0IcE3fXsatWR0ERQlxBR0BHXF0VRFxWFFFUX1JaUVQS8JQVCQITERVSXfCPQVQSUV1QXxJDWEBCEkJBUBEAAxQQEVZWFFnTsqr3nFJTQUAbDR1DCglBDA9HQUNdXVMLfVMTRUBUQUddWl8SQkFcEUZBVVtSWlYaCR5BR0ZaX1UNFGVUXFdVW0USQkFQEURcQEdUEkX3nEXxmkZcX1NaRlARVFJdQRFWVhRZ07Kq95xSWlxTR1BCW11QHRJWWFlUEl1RFVdTWkAVQVNAFFFUElBbW0JHX0BURVtcWkYfEnz3jBFEXFpBEUFWRxVZV0ZGUEISDBRwRRJFW0FDVxNHVF1eVhRRVBJQW1tCR19AVEVbXFoV8ptHVVxFH1ZYWVQSV/ecW/GTFEZQRkZG9phXEwsVctCzrVBCRhNYUBFRXPeORRJX1rWoXUNEWkNGRlpcRfGaFFFEEkNGWltXRxoJHkINCEUPDkBAR15cVAp8XRJd1rWoSxNVFUFTQBRRVBJRW1tfVxNG9phCXFpGVBJSQEFUXFdBUB8OHEdBQ11dUwsRYFZSQEJXQRgVUFFQUUVFV0EUWkQSUllQX1ZWRhkRUVxGR1RRR1FYVFxHFFRDVUZZUF9G8J0ZEUFWFFHym1VRW1US8J1SUF5WWVBfRh0IGkEMD0QLDUFHRlpfVQ13UBFDRl0VXFNdRUBUEl9RFUFeRkcVQl1GQlBfRg8bRkVAXFpSDxIJFFZeX0NVR1RAE/eVEUjwnUdeElJBFV1bVkEVVVcT9p4RXFYUR1hXXRRTUFtBURXziRMPFV9XE1BaX1xWRhVAR1YUWVASX11SX1cT95URAwMEFRQSCBRbVBJDVUYRVlpGUBHxkxRERF1aFFpfEkFRW15cUFEVChJdURVBU0AUW15fXlFHEV5SFFNd8ZtXXVQSV1EVXVMTV1RDRlYURkRAE1hUQEdWWFlUElJTXEUSX1UVVfGaV1xCW1xaGRFcWhRGXlwTUPaYXlJdFQoSXVEVQVNAFFFYQFYUUVQSQkFQXRJDW1xfRhNQUBFERlEVXVMTRvaYQlxaRlQSVkdBEVBcWltUEggUVEdTXVdQQxJGWhVSWlpSU0NXE0dUX0ETWNexq/CdVkNTXRRR07KqW/aIElpYFUJdQUAbDR1DCg=="};
+
+const JOURS = ["accueil","lundi","mardi","mercredi","jeudi","vendredi","reference","outils"];
+const CLE = "carnet-clinique-v2";
+
+const nf = new Intl.NumberFormat("fr-BE");
+const eur = (n)=> nf.format(Math.round(n))+" €";
+const dec = (n,d)=> new Intl.NumberFormat("fr-BE",{minimumFractionDigits:d,maximumFractionDigits:d}).format(n);
+const pct = (n)=> dec(n*100,0)+" %";
+const num = (el)=> { const v=parseFloat(String(el.value).replace(",",".")); return isFinite(v)?v:null; };
+
+// ---------- etat ----------
+// Le carnet ne conserve plus que les saisies des calculs : tout le travail des etudiants
+// vit dans le document partage de leur equipe, pas ici.
+let etat = {version:3, jour:"accueil", champs:{}, ouverts:{}, defile:{}, rail:false, calcOuvert:null};
+try { const brut = localStorage.getItem(CLE); if(brut) etat = Object.assign(etat, JSON.parse(brut)); } catch(e){}
+let minuteur = null;
+function enregistrer(){
+  clearTimeout(minuteur);
+  minuteur = setTimeout(()=>{ try { localStorage.setItem(CLE, JSON.stringify(etat)); } catch(e){} }, 400);
+}
+function restaurer(){
+  document.querySelectorAll("[data-champ]").forEach(el=>{
+    const v = etat.champs[el.dataset.champ];
+    if(v!==undefined && v!==null) el.value = v;
+  });
+}
+
+// ---------- navigation ----------
+function aller(jour, pousser){
+  if(JOURS.indexOf(jour)<0) jour="accueil";
+  const courant = document.querySelector(".jour.actif");
+  if(courant) etat.defile[courant.id] = window.scrollY;
+  document.querySelectorAll(".jour").forEach(s=> s.classList.toggle("actif", s.id===jour));
+  document.querySelectorAll("[data-aller]").forEach(b=> b.setAttribute("aria-current", String(b.dataset.aller===jour)));
+  etat.jour = jour; enregistrer();
+  if(pousser!==false && location.hash.slice(1)!==jour) history.pushState(null,"","#"+jour);
+  window.scrollTo(0, etat.defile[jour]||0);
+}
+window.addEventListener("hashchange", ()=> aller(location.hash.slice(1)||etat.jour, false));
+
+// ---------- le rail ----------
+function rail(ouvert){
+  // Sous 720 px le rail se range sous le texte : l'ouvrir ne suffit pas, il faut y aller.
+  if(ouvert){
+    const colonne = document.querySelector(".rail");
+    if(colonne) setTimeout(()=>{ if(getComputedStyle(colonne).position === "static") colonne.scrollIntoView({behavior:"smooth", block:"start"}); }, 60);
+  }
+  marquer("rail-ouvert", !!ouvert);
+  document.querySelectorAll("[data-rail-bascule]").forEach((b)=> b.setAttribute("aria-pressed", String(!!ouvert)));
+  etat.rail = !!ouvert; enregistrer();
+}
+
+// Neuf calculs ouverts en meme temps font une colonne plus haute que l'ecran : celui dans
+// lequel on tape sort du champ des qu'on fait defiler la page pour lire ou se trouve le
+// nombre. Un seul reste ouvert, il est amene sous les yeux, et on le retrouve au retour.
+const CARTES = [...document.querySelectorAll("[data-calc]")];
+CARTES.forEach((carte)=>{
+  carte.addEventListener("toggle", ()=>{
+    if(!carte.open){
+      if(etat.calcOuvert === carte.dataset.calc){ etat.calcOuvert = null; enregistrer(); }
+      return;
+    }
+    CARTES.forEach((autre)=>{ if(autre !== carte) autre.open = false; });
+    etat.calcOuvert = carte.dataset.calc; enregistrer();
+    const colonne = document.querySelector(".rail");
+    if(colonne) colonne.scrollTop = Math.max(0, carte.offsetTop - colonne.offsetTop - 8);
+  });
+});
+if(etat.calcOuvert){
+  const voulue = CARTES.find((carte)=> carte.dataset.calc === etat.calcOuvert);
+  if(voulue) CARTES.forEach((carte)=>{ carte.open = (carte === voulue); });
+}
+
+// ---------- les neuf calculs ----------
+const CALCS = {
+  struct: (v)=> (v.total ? '<span class="gros">'+pct(v.montant/v.total)+'</span> de '+eur(v.total) : ""),
+  capacite: (v)=>{
+    if(!(v.dispo>0)) return "";
+    const inut = Math.max(0, v.dispo - (v.utilisees||0));
+    const taux = v.salaire ? v.salaire/v.dispo : null;
+    let s = '<span class="gros">'+nf.format(Math.round(inut))+' h inutilisées</span>';
+    s += 'Taux d’utilisation : '+pct((v.utilisees||0)/v.dispo);
+    if(taux) s += ' · une heure coûte '+dec(taux,2)+' € · ces heures valent <strong>'+eur(inut*taux)+'</strong>';
+    return s;
+  },
+  marge: (v)=>{
+    if(!(v.tarif>0) || v.fournitures===null) return "";
+    const part = v.fournitures>1 ? v.fournitures/100 : v.fournitures;
+    const f = v.tarif*part, m = v.tarif-f;
+    return '<span class="gros">'+eur(m)+'</span>'+eur(f)+' partent en coûts variables · taux de marge '+pct(m/v.tarif);
+  },
+  seuil: (v)=>{
+    if(!(v.total>0)) return "";
+    // La marge moyenne se pondere par le volume. Les recettes et les couts variables la portent
+    // deja : trois nombres lus a l'ecran suffisent, quel que soit le nombre de services ouverts.
+    const calculee = (v.recettes>0 && v.traites>0) ? (v.recettes-(v.directs||0))/v.traites : null;
+    const marge = calculee !== null ? calculee : v.marge;
+    if(!(marge>0)) return "";
+    const fixes = v.total-(v.directs||0), seuil = Math.ceil(fixes/marge);
+    let s = '<span class="gros">'+nf.format(seuil)+' cas</span>Coûts fixes : '+eur(v.total)+' − '+eur(v.directs||0)+' = <strong>'+eur(fixes)+'</strong>';
+    if(calculee !== null) s += '<br>Marge moyenne par cas : ('+eur(v.recettes)+' − '+eur(v.directs||0)+') ÷ '+nf.format(v.traites)+' = <strong>'+dec(calculee,2)+' €</strong>. Elle est déjà pondérée par le volume : un service qui traite beaucoup de cas y pèse à hauteur de ce qu’il traite.';
+    if(v.traites>0) s += '<br>Vous en traitez '+nf.format(v.traites)+' : il en manque <strong>'+nf.format(Math.max(0,seuil-v.traites))+'</strong>.';
+    return s;
+  },
+  securite: (v)=>{
+    if(!(v.traites>0) || !(v.seuil>0)) return "";
+    const ecart = v.traites - v.seuil, part = ecart/v.traites;
+    if(ecart < 0) return '<span class="gros">−'+dec(Math.abs(part)*100,1)+' %</span>Vous êtes <strong>sous</strong> le seuil de '+nf.format(Math.abs(ecart))+' cas. Il n’y a pas de marge à protéger : il y a un écart à combler.';
+    let s = '<span class="gros">'+dec(part*100,1)+' %</span>L’activité peut chuter de '+nf.format(ecart)+' cas avant de repasser sous le seuil.';
+    s += part < 0.15 ? '<br><strong>C’est mince.</strong> Une mauvaise année suffit à vous ramener en perte : dites-le en présentant.'
+                     : '<br>Vous pouvez annoncer ce chiffre : il dit ce que votre prévision supporte comme erreur.';
+    return s;
+  },
+  facteur: (v)=>{
+    if(v.marge===null) return "";
+    if(!(v.heures>0)) return '<span class="gros">n’utilise aucune heure de cette ressource</span>Ce service ne consomme rien de la ressource rare : il ne se classe pas, il passe devant.';
+    return '<span class="gros">'+eur(v.marge/v.heures)+' par heure</span>'+eur(v.marge)+' ÷ '+dec(v.heures,2)+' h';
+  },
+  goulot: (v)=>{
+    if(!(v.parCas>0) || !(v.dispo>0)) return "";
+    const parTemps = Math.floor(v.dispo/v.parCas);
+    const plafond = v.demandes>0 ? Math.floor(v.demandes*(v.premiere==="oui"?0.6:1)) : null;
+    const cas = plafond===null ? parTemps : Math.min(parTemps, plafond);
+    const quoi = plafond!==null && plafond<parTemps ? "la demande" : "le temps";
+    let s = '<span class="gros">'+nf.format(cas)+' cas</span>';
+    s += 'Le temps permet '+nf.format(parTemps)+' cas';
+    if(plafond!==null) s += ' · la demande en permet '+nf.format(plafond)+(v.premiere==="oui"?" (60 % la première année)":"");
+    s += '<br>Le goulot, c’est <strong>'+quoi+'</strong>.';
+    if(v.marge>0) s += '<br>Marge totale attendue : <strong>'+eur(cas*v.marge)+'</strong>';
+    return s;
+  },
+  differentiel: (v)=>{
+    // Deux usages, deux reponses. Sur le choix acheter/louer on ne remplit que les deux
+    // derniers champs : renvoyer alors un ecart de 0 € et une sensibilite a 0 € donnerait
+    // trois lignes fausses autour de la seule qui repond.
+    if((v.sans===null || v.avec===null) && v.mise>0){
+      if(!(v.suite>0)) return '<span class="gros">jamais, en l’état</span>Sans gain annuel, le montant investi ne revient pas. Ajoutez ce que l’option la moins chère à l’usage vous fait économiser chaque année.';
+      return '<span class="gros">'+dec(v.mise/v.suite,1)+' ans</span>Au-delà de cette durée, l’option qui coûte cher une fois devient la moins chère. En deçà, c’est l’autre.'
+        +'<br><em>Comparez-la à la durée pendant laquelle vous comptez vraiment exercer cette activité. Remplissez les deux premiers champs si vous voulez aussi l’écart de la première année.</em>';
+    }
+    if(v.sans===null || v.avec===null) return "";
+    const ecart = v.avec - v.sans;
+    let s = '<span class="gros">'+(ecart>=0?"+":"")+eur(ecart)+'</span>';
+    s += ecart>0 ? "Le projet fait mieux que ne rien faire dès la première année."
+                 : ecart===0 ? "Le projet fait <strong>exactement</strong> ce que ferait l’inaction : il n’apporte rien la première année, et il engage quand même la clinique."
+                 : "Le projet fait <strong>moins bien</strong> que ne rien faire la première année. Cela ne le condamne pas : regardez le délai de récupération.";
+    if(v.mise>0){ s += v.suite>0 ? '<br>Délai de récupération : <strong>'+dec(v.mise/v.suite,1)+' ans</strong>.'
+                                 : '<br>Délai de récupération : <strong>jamais, en l’état</strong> — sans gain annuel, le montant investi ne revient pas.'; }
+    s += '<br><strong>Si la demande n’arrive pas.</strong> Chaque cas qui manque retire sa marge entière de cet écart, et <em>aucun</em> coût fixe du projet ne disparaît avec lui : ni le loyer de la salle, ni l’entretien ou la location de l’appareil, ni l’annuité de l’emprunt. Une demande à 80 % coûte donc bien plus que 20 % de l’écart — et d’autant plus que le projet apporte de charges fixes.';
+    s += '<br><em>Pour 80 % de la demande : retirez de l’écart 20 % des cas du projet × sa marge par cas. Pour 60 %, 40 %. Ne multipliez jamais l’écart lui-même par 0,8.</em>';
+    return s;
+  },
+  indifference: (v)=>{
+    if(v.f1===null || v.f2===null || v.v1===null || v.v2===null) return "";
+    const dv = v.v2 - v.v1, df = v.f1 - v.f2;
+    if(dv === 0) return '<span class="gros">aucun point d’indifférence</span>Les deux options coûtent la même chose par cas : c’est le coût fixe qui tranche, à tout volume.';
+    const q = df/dv;
+    if(q < 0) return '<span class="gros">aucun croisement</span>Une option est moins chère à tout volume : ses deux coûts sont inférieurs. Le volume n’est pas l’argument ici.';
+    const moinsCherEnDessous = v.f1 < v.f2 ? "l’option 1" : "l’option 2";
+    const moinsCherAuDessus = v.f1 < v.f2 ? "l’option 2" : "l’option 1";
+    return '<span class="gros">'+nf.format(Math.round(q))+' cas par an</span>'
+      +'En dessous : <strong>'+moinsCherEnDessous+'</strong>. Au-dessus : <strong>'+moinsCherAuDessus+'</strong>.'
+      +'<br>Votre désaccord ne porte plus sur les options, mais sur le volume attendu — qui, lui, se discute.';
+  }
+};
+function recalculer(carte){
+  const fn = CALCS[carte.dataset.calc]; if(!fn) return;
+  const v = {};
+  carte.querySelectorAll("[data-in]").forEach(el=>{ v[el.dataset.in] = el.tagName==="SELECT" ? el.value : num(el); });
+  const out = carte.querySelector("[data-out]");
+  if(out) out.innerHTML = fn(v) || "…";
+}
+function recalculerTout(){ document.querySelectorAll("[data-calc]").forEach(recalculer); }
+
+// ---------- ce qu'un calcul passe au suivant ----------
+function reporter(){
+  const t = etat.champs["marge.tarif"], f = etat.champs["marge.fournitures"];
+  if(t && f){
+    const part = parseFloat(f)>1 ? parseFloat(f)/100 : parseFloat(f);
+    const m = parseFloat(t)*(1-part);
+    ["facteur.marge","goulot.marge"].forEach(cle=>{
+      const el = document.querySelector('[data-champ="'+cle+'"]');
+      if(el && !el.value){ el.value = m.toFixed(2); etat.champs[cle]=el.value; }
+    });
+  }
+  const seuil = document.querySelector('[data-calc="seuil"]');
+  if(seuil){
+    const total = parseFloat(etat.champs["seuil.total"]), directs = parseFloat(etat.champs["seuil.directs"]), marge = parseFloat(etat.champs["seuil.marge"]);
+    if(isFinite(total) && isFinite(marge) && marge>0){
+      const el = document.querySelector('[data-champ="securite.seuil"]');
+      if(el && !el.value){ el.value = String(Math.ceil((total-(directs||0))/marge)); etat.champs["securite.seuil"]=el.value; }
+    }
+    const tr = etat.champs["seuil.traites"];
+    const el2 = document.querySelector('[data-champ="securite.traites"]');
+    if(tr && el2 && !el2.value){ el2.value = tr; etat.champs["securite.traites"]=tr; }
+  }
+}
+
+// ---------- verrou ----------
+function decoder(b64, code){
+  try{
+    const bin = atob(b64); const k = new TextEncoder().encode(code);
+    const out = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i) ^ k[i%k.length];
+    return new TextDecoder().decode(out);
+  }catch(e){ return null; }
+}
+document.addEventListener("click",(e)=>{
+  const b = e.target.closest("button"); if(!b) return;
+  if(b.dataset.aller!==undefined){ aller(b.dataset.aller); return; }
+  if(b.dataset.rail!==undefined){ rail(true); return; }
+  if(b.dataset.railBascule!==undefined){ rail(!RACINE.classList.contains("rail-ouvert")); return; }
+  if(b.dataset.railFermer!==undefined){ rail(false); return; }
+  if(b.dataset.projection!==undefined){
+    marquer("projection", !RACINE.classList.contains("projection"));
+    try{ sessionStorage.setItem("carnet-projection", RACINE.classList.contains("projection")?"1":"0"); }catch(err){}
+    return;
+  }
+  if(b.dataset.voir!==undefined){
+    const boite = b.closest("[data-verrou]"), jour = boite.dataset.verrou;
+    const msg = boite.querySelector("[data-msg]"), cible = boite.querySelector("[data-reponse]");
+    const saisi = String(boite.querySelector("[data-code]").value).trim();
+    const texte = saisi===CODES[jour] ? decoder(REPONSES[jour], CODES[jour]) : null;
+    if(!texte){ msg.textContent="Ce code ne correspond pas. Votre enseignant le donne après les présentations."; return; }
+    msg.textContent=""; cible.innerHTML = texte; cible.hidden = false;
+    etat.ouverts[jour]=true; enregistrer();
+    return;
+  }
+  if(b.dataset.encoder!==undefined){
+    const code=document.querySelector("[data-enc-code]").value.trim();
+    const txt=document.querySelector("[data-enc-texte]").value;
+    const bytes=new TextEncoder().encode(txt), k=new TextEncoder().encode(code);
+    let bin=""; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]^k[i%k.length]);
+    document.querySelector("[data-enc-sortie]").value = btoa(bin);
+    return;
+  }
+});
+
+// ---------- saisie ----------
+function saisie(e){
+  const el = e.target.closest("[data-champ]"); if(!el) return;
+  etat.champs[el.dataset.champ] = el.value; enregistrer();
+  const carte = el.closest("[data-calc]"); if(carte) recalculer(carte);
+  if(/^(marge|seuil)\./.test(el.dataset.champ)) reporter();
+}
+document.addEventListener("input", saisie);
+document.addEventListener("change", saisie);
+
+// ---------- demarrage ----------
+try{ if(sessionStorage.getItem("carnet-projection")==="1") marquer("projection", true); }catch(e){}
+document.addEventListener("keydown",(e)=>{
+  if(/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  if(e.key==="p") marquer("projection", !RACINE.classList.contains("projection"));
+  if(e.key==="c") rail(!RACINE.classList.contains("rail-ouvert"));
+});
+restaurer(); reporter(); recalculerTout();
+if(etat.rail){ marquer("rail-ouvert", true); document.querySelectorAll("[data-rail-bascule]").forEach((b)=> b.setAttribute("aria-pressed","true")); }
+aller(location.hash.slice(1) || etat.jour || "accueil", false);
+})();
+
+</script>
+</body>
+</html>
