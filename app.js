@@ -6,20 +6,8 @@
   const STORAGE_KEY = "clinic-board-v3-full";
   const LEGACY_KEY = "clinic-board-v2-mvp";
   const SCHEMA_VERSION = 8;
-  const MAX_ALLOCATION = 1.3;
-  const OVERTIME_PREMIUM = 1.25;
-  const SOCIAL_CHARGE_RATE = .22;
-  const FATIGUE_ABSENCE_PER_OVERTIME = .3;
-  const SERVICE_RAMP_UP = .6;
-  const HIRE_ONBOARDING = .25;
-  const SEVERANCE_SHARE = .25;
-  const DEPARTURE_CLIMATE = -6;
-  const DROPOFF_ROOM_FACTOR = .7;
-  const RESIGN_CLIMATE = 30;
-  const RESIGN_PAY_CLIMATE = 45;
-  const RESIGN_PAY_RATIO = .95;
-  const CLINIC_DEMAND_SWING = .04;
-  const SERVICE_DEMAND_SWING = .08;
+  // Every number lives in data.js and is read where it is used, so a rule changed in the teacher's
+  // workshop takes effect at once.
   const STOCK_SERVICES = new Set(["pharmacy", "surgery", "hospital", "dentistry", "orthopedic", "vaccination", "preventive"]);
 
   // Deterministic 0–1 value from a string, so a class code gives every team the same luck.
@@ -36,13 +24,182 @@
 
   function demandSwing(clinic, serviceId) {
     const seed = `${clinic.setup?.classCode || "default"}|${clinic.scenarioId}|${clinic.year}`;
-    return (1 + (seededUnit(`${seed}|clinic`) * 2 - 1) * CLINIC_DEMAND_SWING) * (1 + (seededUnit(`${seed}|${serviceId}`) * 2 - 1) * SERVICE_DEMAND_SWING);
+    return (1 + (seededUnit(`${seed}|clinic`) * 2 - 1) * D.clientModel.clinicDemandSwing) * (1 + (seededUnit(`${seed}|${serviceId}`) * 2 - 1) * D.clientModel.serviceDemandSwing);
   }
   const ADVANCED_SERVICES = new Set(["surgery", "lab", "ultrasound", "dentistry", "radiography", "hospital", "orthopedic"]);
   const ROUTINE_SERVICES = new Set(["consult", "vaccination", "preventive", "pharmacy", "retail"]);
   const DROPOFF_SERVICES = new Set(["vaccination", "preventive", "lab", "pharmacy"]);
   const SERVICE_BY_ID = Object.fromEntries(D.services.map((item) => [item.id, item]));
   const DEFAULT_SOCIAL = { clientTrust: 50, staffClimate: 50, referralSupport: 50, communityPressure: 50 };
+
+  // ---------- The game's rules: data.js, plus the changes a teacher made in the workshop ----------
+  // A clinic may carry `modelRules` (version 2): { nom, valeurs: { chemin: nombre }, noms: { chemin:
+  // { fr, en } or text }, delies: { serviceId: true }, monnaie: { code, facteur } }. Every number and
+  // name the workshop may change is listed once (data.js › atelierSettings, atelierCatalogue). Before
+  // every year is computed, all of them return to their original and the clinic's rules are applied
+  // — so a clinic without rules plays the original game.
+  const stepInto = (v, k) => (v == null ? undefined : Array.isArray(v) ? (v.find((x) => x && x.id === k) ?? (/^\d+$/.test(k) ? v[Number(k)] : undefined)) : v[k]);
+  const readRule = (chemin) => chemin.split(".").reduce(stepInto, D);
+  function writeRule(chemin, value) {
+    const parts = chemin.split(".");
+    const last = parts.pop();
+    const parent = parts.reduce(stepInto, D);
+    if (parent == null || typeof parent !== "object") return;
+    parent[Array.isArray(parent) ? Number(last) : last] = value;
+  }
+  const isBilingual = (v) => v && typeof v === "object" && typeof v.en === "string" && typeof v.fr === "string";
+  // A field's kind sets its bounds and its step, so no bound is typed by hand for each entry.
+  const RULE_KINDS = {
+    money: { bornes: (o) => [0, Math.max(o * 10, 100)], pas: (o) => (o >= 1000 ? 100 : 1), affichage: "euro" },
+    share: { bornes: () => [0, 1], pas: () => .01, affichage: "pourcent" },
+    hours: { bornes: (o) => [0, Math.max(o * 5, 10)], pas: (o) => (o >= 50 ? 10 : .01), affichage: "nombre" },
+    count: { bornes: (o) => [0, Math.max(o * 5, 10)], pas: (o) => (o >= 50 ? 10 : 1), affichage: "nombre" },
+    factor: { bornes: (o) => [Math.round(o * 20) / 100, Math.max(o * 5, 1)], pas: () => .05, affichage: "nombre" },
+    points: { bornes: (o) => [Math.min(-20, o * 3), Math.max(20, o * 3)], pas: () => .5, affichage: "nombre" },
+    score: { bornes: () => [0, 100], pas: () => 1, affichage: "nombre" }
+  };
+  const RULE_SETTINGS = {};
+  const RULE_NAMES = {};
+  (D.atelierSettings || []).forEach((s) => {
+    RULE_SETTINGS[s.chemin] = { ...s, section: "regles", money: s.affichage === "euro", nomL: { en: s.nomEn || s.nom, fr: s.nom }, texteL: { en: s.texteEn || s.texte, fr: s.texte } };
+  });
+  // The rows of a catalogue table: one per item, with the path that reaches it in data.js.
+  function atelierRows(table) {
+    if (table.source === "scenarios.*.staff") {
+      const vus = new Map();
+      Object.entries(D.scenarios).forEach(([sc, scen]) => (scen.staff || []).forEach((p) => {
+        if (vus.has(p)) vus.get(p).scenarios.push(sc);
+        else vus.set(p, { cle: `scenarios.${sc}.staff.${p.id}`, objet: p, scenarios: [sc] });
+      }));
+      return [...vus.values()];
+    }
+    const src = readRule(table.source);
+    if (Array.isArray(src)) return src.filter((x) => x && x.id).map((x) => ({ cle: `${table.source}.${x.id}`, objet: x }));
+    return Object.entries(src || {}).map(([k, x]) => ({ cle: `${table.source}.${k}`, objet: x }));
+  }
+  function addRuleField(chemin, table, row, champ) {
+    const v = readRule(chemin);
+    if (typeof v !== "number" || RULE_SETTINGS[chemin]) return;
+    const kind = RULE_KINDS[champ.genre] || RULE_KINDS.count;
+    const [min, max] = kind.bornes(v);
+    RULE_SETTINGS[chemin] = { chemin, section: table.section, table: table.id, ligne: row.cle, champ: champ.cle, label: champ.label, min, max, pas: kind.pas(v), affichage: kind.affichage, money: champ.genre === "money", complement: champ.complement ? `${row.cle}.${champ.complement}` : null };
+  }
+  (D.atelierCatalogue || []).forEach((table) => atelierRows(table).forEach((row) => {
+    if (table.matrice) Object.keys(row.objet[table.matrice] || {}).forEach((svc) => addRuleField(`${row.cle}.${table.matrice}.${svc}`, table, row, { cle: svc, genre: table.genre }));
+    else (table.champs || []).forEach((champ) => addRuleField(`${row.cle}.${champ.cle}`, table, row, champ));
+    [table.nom, table.texte].filter(Boolean).forEach((f) => {
+      const chemin = `${row.cle}.${f}`;
+      const v = readRule(chemin);
+      if (typeof v === "string" || isBilingual(v)) RULE_NAMES[chemin] = { section: table.section, table: table.id, ligne: row.cle, texte: f === table.texte };
+    });
+  }));
+  const RULE_DEFAULTS = Object.fromEntries(Object.keys(RULE_SETTINGS).map((c) => [c, readRule(c)]));
+  const NAME_DEFAULTS = Object.fromEntries(Object.keys(RULE_NAMES).map((c) => [c, JSON.parse(JSON.stringify(readRule(c)))]));
+  const COMPLEMENT_DEFAULTS = Object.fromEntries(Object.values(RULE_SETTINGS).filter((s) => s.complement).map((s) => [s.complement, readRule(s.complement)]));
+  const RULE_CURRENCIES = D.atelierCurrencies || ["EUR"];
+  let ruleCurrency = "EUR";
+  // Only listed settings and names, numbers inside their bounds, names kept short: a file from
+  // elsewhere can change the rules, never break the game. What equals the original is dropped.
+  // Accounts (owner, 2026-11-02): « simples » by default — the students are the associates, Dr Kone
+  // a salaried vet, purchases paid and counted once, no owners' money. « détaillés » restores the
+  // Belgian statement: the founder as self-employed manager, depreciation, the reduced tax band, dividends.
+  const GERANTS = new Set((D.baseStaff || []).filter((p) => p.gerant).map((p) => p.id));
+  const comptesDetailles = (clinic = state) => clinic?.modelRules?.comptes === "detailles";
+  function appliquerComptes(clinic) {
+    const detail = comptesDetailles(clinic);
+    clinic.staff = (clinic.staff || []).map((p) => { const { gerant, ...reste } = p; return detail && GERANTS.has(p.id) ? { ...reste, gerant: true } : reste; });
+    return clinic;
+  }
+  function cleanRules(rules) {
+    if (!rules || typeof rules !== "object") return null;
+    const valeurs = {};
+    // A rules file written before supplies were an amount per case gave them as a share of the price.
+    const anciennes = Object.entries(rules.valeurs || {}).flatMap(([chemin, v]) => {
+      const m = chemin.match(/^services\.(\w+)\.variableCost$/);
+      if (!m || !SERVICE_BY_ID[m[1]]) return [[chemin, v]];
+      const prix = Number(rules.valeurs[`services.${m[1]}.price`] ?? SERVICE_BY_ID[m[1]].price);
+      return [[`services.${m[1]}.supplyCost`, Math.round(Number(v) * prix * 100) / 100]];
+    });
+    anciennes.forEach(([chemin, v]) => {
+      const def = RULE_SETTINGS[chemin];
+      const n = Number(v);
+      if (!def || !Number.isFinite(n)) return;
+      const borne = Math.min(def.max, Math.max(def.min, n));
+      if (Math.abs(borne - RULE_DEFAULTS[chemin]) > 1e-9) valeurs[chemin] = borne;
+    });
+    const noms = {};
+    Object.entries(rules.noms || {}).forEach(([chemin, v]) => {
+      const origine = NAME_DEFAULTS[chemin];
+      if (origine === undefined || v == null) return;
+      const court = (t, repli) => String(t ?? "").trim().slice(0, 120) || repli;
+      if (typeof origine === "string") { const t = court(typeof v === "string" ? v : v.fr ?? v.en, origine); if (t !== origine) noms[chemin] = t; return; }
+      const fr = court(v.fr, origine.fr), en = court(v.en, origine.en);
+      if (fr !== origine.fr || en !== origine.en) noms[chemin] = { fr, en };
+    });
+    const delies = {};
+    Object.entries(rules.delies || {}).forEach(([id, v]) => { if (v && SERVICE_BY_ID[id]) delies[id] = true; });
+    const code = RULE_CURRENCIES.includes(rules.monnaie?.code) ? rules.monnaie.code : "EUR";
+    const facteur = Math.min(5, Math.max(.2, Number(rules.monnaie?.facteur) || 1));
+    const monnaie = code !== "EUR" || Math.abs(facteur - 1) > 1e-9 ? { code, facteur } : null;
+    const comptes = rules.comptes === "detailles" ? "detailles" : null;
+    if (!Object.keys(valeurs).length && !Object.keys(noms).length && !monnaie && !Object.keys(delies).length && !comptes) return null;
+    return { nom: String(rules.nom || "").slice(0, 60), version: 2, valeurs, noms, delies, monnaie, ...(comptes ? { comptes } : {}) };
+  }
+  let appliedRulesKey = "";
+  function applyModelRules(rules) {
+    const clean = cleanRules(rules);
+    const key = clean ? JSON.stringify(clean) : "";
+    if (key === appliedRulesKey) return;
+    Object.keys(RULE_SETTINGS).forEach((c) => writeRule(c, RULE_DEFAULTS[c]));
+    Object.entries(COMPLEMENT_DEFAULTS).forEach(([c, v]) => writeRule(c, v));
+    Object.keys(RULE_NAMES).forEach((c) => writeRule(c, JSON.parse(JSON.stringify(NAME_DEFAULTS[c]))));
+    ruleCurrency = "EUR";
+    if (clean) {
+      Object.entries(clean.valeurs).forEach(([c, v]) => {
+        writeRule(c, v);
+        const comp = RULE_SETTINGS[c].complement;
+        if (comp) writeRule(comp, Math.max(0, 1 - v));
+      });
+      // A base price moves what clients accept for that service by the same share, unless the
+      // teacher unlinked it (to create an over-priced situation on purpose).
+      Object.entries(clean.valeurs).forEach(([c, v]) => {
+        const m = c.match(/^services\.([^.]+)\.price$/);
+        if (!m || clean.delies[m[1]] || !RULE_DEFAULTS[c]) return;
+        Object.keys(D.segments).forEach((seg) => {
+          const p = `segments.${seg}.willingness.${m[1]}`;
+          if (p in RULE_SETTINGS && !(p in clean.valeurs)) writeRule(p, RULE_DEFAULTS[p] * v / RULE_DEFAULTS[c]);
+        });
+      });
+      Object.entries(clean.noms).forEach(([c, v]) => writeRule(c, typeof v === "string" ? v : { ...NAME_DEFAULTS[c], ...v }));
+      if (clean.monnaie) ruleCurrency = clean.monnaie.code;
+    }
+    appliedRulesKey = key;
+  }
+  // Prices, salaries, treasury, households and the relations are copied into a clinic when a game
+  // starts. So a clinic that has not played a year takes them again from the rules; after Year 1 they
+  // stay as played.
+  function withStartingValues(clinic) {
+    if ((clinic.history || []).length) return clinic;
+    applyModelRules(clinic.modelRules);
+    const fresh = initialState(clinic.scenarioId, clinic.language, clinic.setup, clinic.rules);
+    Object.keys(clinic.services).forEach((id) => { if (fresh.services[id]) clinic.services[id].price = fresh.services[id].price; });
+    clinic.staff = fresh.staff;
+    appliquerComptes(clinic);
+    clinic.treasury = fresh.treasury;
+    clinic.setup = { ...clinic.setup, startingTreasury: fresh.setup.startingTreasury };
+    clinic.clients = fresh.clients;
+    clinic.reputation = fresh.reputation;
+    clinic.social = fresh.social;
+    clinic.carbonBaseline = null;
+    return clinic;
+  }
+  // The workshop's code is checked against a fingerprint (FNV-1a), never stored as such.
+  function atelierFingerprint(texte) {
+    let h = 0x811c9dc5;
+    for (const c of String(texte || "").trim().toUpperCase()) { h ^= c.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16).padStart(8, "0");
+  }
+
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -87,13 +244,13 @@
     source.forEach((row) => {
       const service = SERVICE_BY_ID[row?.serviceId];
       if (!service || !roleCompatible(person, service)) return;
-      const share = clamp(Number(row.share || 0), 0, MAX_ALLOCATION);
+      const share = clamp(Number(row.share || 0), 0, D.staffModel.maxAllocation);
       merged.set(service.id, (merged.get(service.id) || 0) + share);
     });
-    let allocations = [...merged.entries()].map(([serviceId, share]) => ({ serviceId, share: Math.min(MAX_ALLOCATION, share) }));
+    let allocations = [...merged.entries()].map(([serviceId, share]) => ({ serviceId, share: Math.min(D.staffModel.maxAllocation, share) }));
     if (!allocations.length) allocations = legacyAllocations(person);
     const total = allocationTotal(allocations);
-    if (total > MAX_ALLOCATION) allocations = allocations.map((row) => ({ ...row, share: row.share * MAX_ALLOCATION / total }));
+    if (total > D.staffModel.maxAllocation) allocations = allocations.map((row) => ({ ...row, share: row.share * D.staffModel.maxAllocation / total }));
     return allocations;
   }
 
@@ -104,8 +261,10 @@
   // One ceiling for every control that writes a share. The step buttons used to floor it to the
   // 5% grid: a row holding a typed share (90 h of 1 421 is 6.33%) dropped the reachable maximum
   // from 130% to 120% while the hours field still allowed 123.67%.
+  // Before the calendar opens overtime, a person's hours stop at 100 %.
   function allocationCeiling(others) {
-    return Math.max(0, MAX_ALLOCATION - others);
+    const plafond = state?.calendrier && !famillesOuvertes().has("heuresSup") ? Math.min(1, D.staffModel.maxAllocation) : D.staffModel.maxAllocation;
+    return Math.max(0, plafond - others);
   }
 
   // Every share a student sets stands for a whole number of hours, so the hours on the rows add up
@@ -132,7 +291,7 @@
   // hours, so this returns the precise remainder. It targets 100%, never the overtime ceiling.
   function allocationRemainder(allocations, index) {
     const others = allocationTotal(allocations) - (allocations[index]?.share || 0);
-    return Math.max(0, Math.min(1, MAX_ALLOCATION) - others - (allocations[index]?.share || 0));
+    return Math.max(0, Math.min(1, D.staffModel.maxAllocation) - others - (allocations[index]?.share || 0));
   }
 
   function validAllocations(person, allocations) {
@@ -143,11 +302,11 @@
       const service = SERVICE_BY_ID[row?.serviceId];
       const share = Number(row?.share);
       if (!service || !roleCompatible(person, service) || ids.has(service.id)) return false;
-      if (!Number.isFinite(share) || share <= 0 || share > MAX_ALLOCATION + .0001) return false;
+      if (!Number.isFinite(share) || share <= 0 || share > D.staffModel.maxAllocation + .0001) return false;
       ids.add(service.id);
       total += share;
     }
-    return total > 0 && total <= MAX_ALLOCATION + .0001;
+    return total > 0 && total <= D.staffModel.maxAllocation + .0001;
   }
 
   function initialState(scenarioId = "balanced", language = detectedLanguage(), setupOverride = null, rulesOverride = null) {
@@ -176,7 +335,7 @@
       clients: scenario.clients,
       reputation: scenario.reputation,
       marketFocus: scenario.marketFocus,
-      staff: clone(scenario.staff).map(normalizeStaff),
+      staff: clone(scenario.staff).map(normalizeStaff).map(({ gerant, ...p }) => p),
       trainings: clone(scenario.trainings),
       social: clone(scenario.social || DEFAULT_SOCIAL),
       equipment: equipmentState,
@@ -211,11 +370,13 @@
   }
 
   function normalizeStaff(person) {
-    const base = Number(person.baseSalary || person.salary || (person.role === "vet" ? 56000 : 30000));
+    const base = Number(person.baseSalary || person.salary || (person.role === "vet" ? 45000 : 26000));
     const normalized = {
       id: person.id,
       name: person.name,
       role: person.role === "vet" ? "vet" : "support",
+      // The founding vet manages the company: self-employed, paid a manager's remuneration.
+      ...(person.gerant ? { gerant: true } : {}),
       baseSalary: base,
       salary: Number(person.salary || base),
       capacity: Number(person.capacity || 1500),
@@ -223,7 +384,7 @@
       primaryService: SERVICE_BY_ID[person.primaryService] ? person.primaryService : (person.role === "vet" ? "consult" : "vaccination"),
       secondaryService: SERVICE_BY_ID[person.secondaryService] ? person.secondaryService : "",
       secondaryShare: clamp(Number(person.secondaryShare || 0), 0, .95),
-      lastOvertimeRatio: clamp(Number(person.lastOvertimeRatio || 0), 0, MAX_ALLOCATION),
+      lastOvertimeRatio: clamp(Number(person.lastOvertimeRatio || 0), 0, D.staffModel.maxAllocation),
       hiredYear: Number(person.hiredYear || 0),
       allocations: []
     };
@@ -280,6 +441,7 @@
     merged.rooms = { ...fresh.rooms, ...(saved.rooms || {}) };
     merged.equipment = { ...fresh.equipment, ...(saved.equipment || {}) };
     merged.staff = (saved.staff || fresh.staff).map(normalizeStaff);
+    appliquerComptes(merged);
     merged.pending = Object.fromEntries(Object.entries(saved.pending || {}).map(([key, action]) => [key, { revisions: 0, ...action, key }]));
     merged.history = saved.history || [];
     merged.reflections = saved.reflections || {};
@@ -291,6 +453,8 @@
     merged.cashLog = Array.isArray(saved.cashLog) ? saved.cashLog : [];
     merged.decisionLog = Array.isArray(saved.decisionLog) ? saved.decisionLog : [];
     merged.rehireBlocked = saved.rehireBlocked || {};
+    merged.calendrier = cleanCalendrier(saved.calendrier).calendrier;
+    merged.calendrierOuverts = Array.isArray(saved.calendrierOuverts) ? saved.calendrierOuverts.filter(Number.isInteger) : [];
     // An undo snapshot from an older schema would restore a clinic this version cannot read, so it
     // is only carried when it came from this one.
     merged.undo = saved.undo && saved.undo.snapshot && saved.undo.snapshot.schemaVersion === SCHEMA_VERSION ? saved.undo : null;
@@ -310,13 +474,15 @@
       if (legacy) return migrateLegacy(JSON.parse(legacy));
     } catch (error) {
       console.warn("Could not load saved clinic", error);
+      // The next save would overwrite a clinic this version could not read: keep a copy first.
+      try { const brut = localStorage.getItem(STORAGE_KEY); if (brut) localStorage.setItem(`${STORAGE_KEY}-secours`, brut); } catch (e) { /* storage unavailable */ }
     }
     return initialState();
   }
 
   let state = loadState();
   let t = I18N.createTranslator(state.language);
-  let ui = { framesOpen: false, noteOpen: false, regleOpen: false, passCheck: false, personTab: "time", showClosedServices: false, drawer: null, drawerStep: 1, drawerContext: null, selectedServiceId: null, reopenBeginnerGuide: false, vacancy: { role: "vet", skills: [], budget: 60000 }, candidateLimit: 4, lastFocus: null, allocationDrafts: {}, decisionDrafts: {}, settingsOpen: false, settingsDraft: null, settingsError: "", restore: null, returnFocus: null, autoFocusDrawer: false, replaceRoute: false, originStack: [], returnLabel: null, focusItem: null };
+  let ui = { gestionTab: "annee", evoGroupe: "tout", evoAnnee: null, evoComparer: [], servicesAnnee: "prevu", grand: null, framesOpen: false, noteOpen: false, regleOpen: false, passCheck: false, personTab: "time", showClosedServices: false, drawer: null, drawerStep: 1, drawerContext: null, selectedServiceId: null, reopenBeginnerGuide: false, vacancy: { role: "vet", skills: [], budget: 60000 }, candidateLimit: 4, lastFocus: null, allocationDrafts: {}, decisionDrafts: {}, settingsOpen: false, settingsDraft: null, settingsError: "", restore: null, returnFocus: null, autoFocusDrawer: false, replaceRoute: false, originStack: [], returnLabel: null, focusItem: null };
 
   function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -326,8 +492,12 @@
     return state.language === "fr" ? "fr-BE" : "en-GB";
   }
 
-  function money(value) {
-    return new Intl.NumberFormat(locale(), { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(Math.round(Number(value || 0)));
+  function money(value, devise = ruleCurrency) {
+    return new Intl.NumberFormat(locale(), { style: "currency", currency: devise, maximumFractionDigits: 0 }).format(Math.round(Number(value || 0)));
+  }
+
+  function currencySymbol() {
+    return (new Intl.NumberFormat(locale(), { style: "currency", currency: ruleCurrency, currencyDisplay: "narrowSymbol" }).formatToParts(0).find((p) => p.type === "currency") || {}).value || ruleCurrency;
   }
 
   function number(value) {
@@ -354,8 +524,11 @@
     return `${decimal(value, 1)} kgCO₂e`;
   }
 
+  // Safe while the first state is being built (hydrate cleans a saved calendar before `state` exists).
   function L(en, fr) {
-    return state.language === "fr" ? fr : en;
+    let langue;
+    try { langue = state?.language; } catch (e) { langue = null; }
+    return (langue || detectedLanguage()) === "fr" ? fr : en;
   }
 
   function signed(value, type = "number") {
@@ -388,17 +561,166 @@
   }
 
   function actionLimit() {
+    const quota = state.calendrier ? quotaCalendrier() : null;
+    if (quota !== null) return quota;
     return state.rules.unlimited ? Infinity : Math.max(1, Number(state.rules.actionLimit || 3));
   }
 
   // Actions that commit nothing: they move hours the clinic already pays for, so they stay listed
   // in the plan, stay removable, and stay in the decision log — but they do not use up the year.
-  const FREE_ACTION_KINDS = new Set(["staff-allocation"]);
+  const FREE_ACTION_KINDS = new Set(["staff-allocation", "dividend"]);
   function isFreeAction(payload) {
     return FREE_ACTION_KINDS.has(payload?.kind);
   }
   function countedActions() {
     return pendingActions().filter((action) => !isFreeAction(action.payload));
+  }
+  // The teacher's expansion rule: before the year set in Game setup, the clinic answers with what it
+  // has — no hiring, no new room or equipment, no loan, no move. Returns the year it opens, or 0.
+  // A course calendar, when there is one, replaces it.
+  const EXPANSION_KINDS = new Set(["hire", "room-add", "equipment-acquire", "loan", "location"]);
+  function expansionLock(payload) {
+    const from = Number(state.rules.expansionFrom || 1);
+    return !state.calendrier && EXPANSION_KINDS.has(payload?.kind) && state.year < from ? from : 0;
+  }
+
+  // ── The course calendar (data.js › calendrierPresets; edited in the workshop) ──
+  // Which session a year belongs to, what is open by then (cumulative), how many decisions the year
+  // allows, and whether the session's code has been entered. A clinic without a calendar is open.
+  const FAMILLE_DE = Object.fromEntries(Object.entries(D.calendrierFamilles).flatMap(([id, f]) => f.kinds.map((kind) => [kind, id])));
+  // A calendar from a file or from the workshop is checked before it is used: errors refuse it,
+  // notes only inform. Years run from 1 without gaps; each family opens once.
+  function cleanCalendrier(cal) {
+    const erreurs = [], notes = [];
+    // No itemLabel here: this runs inside hydrate, before `state` exists.
+    const lab = (v) => (typeof v === "string" ? v : L(v?.en ?? "", v?.fr ?? ""));
+    if (!cal || typeof cal !== "object" || !Array.isArray(cal.seances)) return { calendrier: null, erreurs, notes };
+    const texte = (v, repli) => (isBilingual(v) ? { fr: String(v.fr).slice(0, 40), en: String(v.en).slice(0, 40) } : (String(v ?? "").trim().slice(0, 40) || repli));
+    const vues = new Set();
+    let attendue = 1;
+    const seances = cal.seances.slice(0, 24).map((s, i) => {
+      const nom = texte(s?.nom, L(`Session ${i + 1}`, `Séance ${i + 1}`));
+      const annees = [...new Set((Array.isArray(s?.annees) ? s.annees : []).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 12))].sort((a, b) => a - b);
+      const nomTexte = typeof nom === "string" ? nom : lab(nom);
+      if (!annees.length) erreurs.push(L(`« ${nomTexte} » has no year.`, `« ${nomTexte} » n’a aucune année.`));
+      annees.forEach((n) => { if (n !== attendue) erreurs.push(L(`Years must follow each other from Year 1: « ${nomTexte} » has Year ${n} where Year ${attendue} was expected.`, `Les années se suivent depuis l’année 1 : « ${nomTexte} » a l’année ${n} là où l’année ${attendue} était attendue.`)); attendue = n + 1; });
+      const types = {}, quotas = {};
+      annees.forEach((n) => {
+        if (s?.types?.[n] === "guidee") types[n] = "guidee";
+        const q = s?.quotas?.[n];
+        if (q !== undefined && q !== null && q !== "") { const k = Math.round(Number(q)); if (Number.isFinite(k) && k >= 0 && k <= 12) quotas[n] = k; else erreurs.push(L(`« ${nomTexte} », Year ${n}: the number of decisions must be from 0 to 12.`, `« ${nomTexte} », année ${n} : le nombre de décisions va de 0 à 12.`)); }
+      });
+      const ouvre = [...new Set((Array.isArray(s?.ouvre) ? s.ouvre : []).filter((f) => D.calendrierFamilles[f]))];
+      ouvre.forEach((f) => { if (vues.has(f)) erreurs.push(L(`« ${lab(D.calendrierFamilles[f].nom)} » opens twice.`, `« ${lab(D.calendrierFamilles[f].nom)} » s’ouvre deux fois.`)); vues.add(f); });
+      const montre = [...new Set((Array.isArray(s?.montre) ? s.montre : []).filter((p) => D.calendrierPanneaux[p]))];
+      const code = /^[0-9a-f]{8}$/.test(String(s?.code || "")) ? s.code : null;
+      return { nom, annees, types, quotas, ouvre, montre, ...(code ? { code } : {}) };
+    });
+    if (!seances.length) erreurs.push(L("A calendar needs at least one session.", "Un calendrier a besoin d’au moins une séance."));
+    Object.entries(D.calendrierFamilles).forEach(([id, f]) => { if (!vues.has(id)) notes.push(L(`« ${lab(f.nom)} » never opens.`, `« ${lab(f.nom)} » ne s’ouvre jamais.`)); });
+    if (erreurs.length) return { calendrier: null, erreurs, notes };
+    return { calendrier: { nom: texte(cal.nom, L("Calendar", "Calendrier")), seances }, erreurs, notes };
+  }
+  function seanceIndex(year = state.year) {
+    const seances = state.calendrier?.seances || [];
+    const i = seances.findIndex((s) => s.annees.includes(year));
+    if (i >= 0) return i;
+    // After the last session's years, the last session's rules go on.
+    return seances.length && year > Math.max(...seances.at(-1).annees) ? seances.length - 1 : -1;
+  }
+  const nomSeance = (s) => (s ? (typeof s.nom === "string" ? s.nom : itemLabel(s.nom)) : "");
+  function famillesOuvertes(year = state.year) {
+    const i = seanceIndex(year);
+    return new Set((state.calendrier?.seances || []).slice(0, i + 1).flatMap((s) => s.ouvre));
+  }
+  // A session with a code stays closed until the code given in class is entered.
+  function seanceFermee() {
+    const i = seanceIndex();
+    const s = state.calendrier?.seances?.[i];
+    return s?.code && !(state.calendrierOuverts || []).includes(i) ? s : null;
+  }
+  // The rules about the year's decisions that apply now, or null for an open game.
+  function calendarLock(payload) {
+    // A clinic left without a vet may replace her whatever the calendar says (owner, 2026-11-02):
+    // otherwise a resignation before Friday would end the run.
+    const remplacement = payload?.kind === "hire" && candidateById(payload.targetId)?.role === "vet" && !state.staff.some((p) => p.role === "vet");
+    if (payload?.kind === "loan" && state.banqueRefusAnnee === state.year) return { court: L("Bank says no", "La banque refuse"), message: L("The bank refuses any new loan this year: last year’s dividend broke the liquidity test.", "La banque refuse tout nouvel emprunt cette année : le dividende de l’an dernier ne respectait pas le test de liquidité.") };
+    if (!state.calendrier) {
+      const from = remplacement ? null : expansionLock(payload);
+      return from ? { court: L(`From Year ${from}`, `À partir de l’année ${from}`), message: L(`Not before Year ${from}: your instructor’s rule.`, `Pas avant l’année ${from} : règle de votre enseignant.`) } : null;
+    }
+    const fermee = seanceFermee();
+    if (fermee && !isFreeAction(payload)) return { court: L("Code needed", "Code requis"), message: L(`« ${nomSeance(fermee)} » opens with the code your instructor gives in class.`, `« ${nomSeance(fermee)} » s’ouvre avec le code donné par votre enseignant en séance.`) };
+    if (remplacement) return null;
+    const famille = payload?.kind === "staff-allocation" ? (allocationTotal(payload.value?.allocations || []) > 1.0001 ? "heuresSup" : null) : FAMILLE_DE[payload?.kind];
+    if (!famille || famillesOuvertes().has(famille)) return null;
+    const plus = (state.calendrier.seances || []).find((s) => s.ouvre.includes(famille));
+    const quand = plus ? nomSeance(plus) : "";
+    return { court: plus ? L(`From ${quand}`, `À partir de ${quand}`) : L("Not in this course", "Pas dans ce cours"), message: plus ? L(`${itemLabel(D.calendrierFamilles[famille].nom)}: from ${quand}.`, `${itemLabel(D.calendrierFamilles[famille].nom)} : à partir de ${quand}.`) : L(`${itemLabel(D.calendrierFamilles[famille].nom)} is not part of this course.`, `${itemLabel(D.calendrierFamilles[famille].nom)} ne fait pas partie de ce cours.`) };
+  }
+  // A panel shows once the family of decisions it is about has opened (data.js › calendrierPanneaux).
+  // The owners' money exists only in the detailed accounts.
+  const PANNEAUX_DETAILLES = new Set(["proprietaires", "dividendes"]);
+  const KINDS_DETAILLES = new Set(["manager-pay", "dividend"]);
+  function shown(panneau) {
+    if (PANNEAUX_DETAILLES.has(panneau) && !comptesDetailles()) return false;
+    if (!state.calendrier) return true;
+    const def = D.calendrierPanneaux[panneau];
+    return !def || famillesOuvertes().has(def.famille);
+  }
+  // The year's quota, when the calendar sets one.
+  function quotaCalendrier(year = state.year) {
+    const s = state.calendrier?.seances?.[seanceIndex(year)];
+    if (!s) return null;
+    if (s.quotas[year] !== undefined) return s.quotas[year];
+    const derniere = Math.max(...s.annees);
+    return year > derniere && s.quotas[derniere] !== undefined ? s.quotas[derniere] : null;
+  }
+  function expansionNotice() {
+    if (state.calendrier) {
+      const fermee = seanceFermee();
+      return fermee ? `<p class="expansion-lock" role="note">🔒 ${escapeHtml(L(`« ${nomSeance(fermee)} » opens with your instructor’s code.`, `« ${nomSeance(fermee)} » s’ouvre avec le code de votre enseignant.`))}</p>` : "";
+    }
+    const from = Number(state.rules.expansionFrom || 1);
+    return state.year < from ? `<p class="expansion-lock" role="note">🔒 ${escapeHtml(L(`Hiring, new rooms, equipment, the loan and moving open in Year ${from} (your instructor’s rule).`, `Embauche, nouvelles salles, équipement, emprunt et déménagement s’ouvrent en année ${from} (règle de votre enseignant).`))}</p>` : "";
+  }
+  // One line under the header: where the course is, and what the year allows. It states, it does not instruct.
+  function calendrierLigne() {
+    if (!state.calendrier) return "";
+    const i = seanceIndex();
+    const s = state.calendrier.seances[i];
+    if (!s) return "";
+    const fermee = seanceFermee();
+    if (fermee) return `<div class="calendar-line locked"><span>🔒 ${escapeHtml(nomSeance(s))} · ${escapeHtml(L(`Year ${state.year}`, `Année ${state.year}`))}</span><label><span class="sr-only">${escapeHtml(L("Session code", "Code de la séance"))}</span><input type="text" maxlength="40" autocomplete="off" data-calendrier-code placeholder="${escapeHtml(L("Code given in class", "Code donné en séance"))}"></label><button class="button primary" data-calendrier-ouvrir>${escapeHtml(L("Open", "Ouvrir"))}</button></div>`;
+    const quota = quotaCalendrier();
+    const type = s.types[state.year] === "guidee" ? L("guided year", "année guidée") : L("free year", "année libre");
+    const permis = [...famillesOuvertes()].map((f) => itemLabel(D.calendrierFamilles[f].nom).toLowerCase());
+    return `<div class="calendar-line"><strong>${escapeHtml(nomSeance(s))}</strong><span>${escapeHtml(L(`Year ${state.year}`, `Année ${state.year}`))} · ${escapeHtml(type)}${quota !== null ? ` — ${escapeHtml(L(`${quota} decision${quota === 1 ? "" : "s"}`, `${quota} décision${quota > 1 ? "s" : ""}`))}` : ""}</span><span class="calendar-allowed">${escapeHtml(L("allowed:", "permis :"))} ${escapeHtml([L("hours", "heures"), ...permis].join(", "))}</span></div>`;
+  }
+  // The teacher's calendar comes with the rules file, or alone; unlike the rules' values it can be
+  // replaced after Year 1 (a session moved, a day cancelled), and the change is logged.
+  function appliquerCalendrier(cal, source) {
+    const { calendrier, erreurs } = cleanCalendrier(cal);
+    if (cal && !calendrier) return { ok: false, erreurs };
+    const avant = JSON.stringify(state.calendrier || null);
+    state.calendrier = calendrier;
+    // The game's horizon covers the calendar: the year after its last session.
+    if (calendrier) { const fin = Math.min(12, Math.max(...calendrier.seances.flatMap((x) => x.annees)) + 1); if (state.rules.targetYear < fin) state.rules = { ...state.rules, targetYear: fin }; }
+    if (JSON.stringify(calendrier) !== avant) {
+      state.calendrierOuverts = [];
+      logDecision("calendar", `calendar:${source}`, calendrier ? `${nomSeance(calendrier)} (${calendrier.seances.length})` : L("none", "aucun"));
+    }
+    return { ok: true, erreurs: [] };
+  }
+  function ouvrirSeance(code) {
+    const i = seanceIndex();
+    const s = state.calendrier?.seances?.[i];
+    if (!s?.code) return false;
+    if (atelierFingerprint(code) !== s.code) return false;
+    state.calendrierOuverts = [...new Set([...(state.calendrierOuverts || []), i])];
+    logDecision("calendar", `calendar:open:${i}`, nomSeance(s));
+    saveState();
+    return true;
   }
 
   // `label` is the decision as the team read it on screen, written at the moment it happens: a
@@ -410,6 +732,9 @@
   }
 
   function queueAction(key, payload) {
+    if (KINDS_DETAILLES.has(payload?.kind) && !comptesDetailles()) { toast(L("In simple accounts the owners take no money out: the company keeps its result.", "Avec les comptes simples, les associés ne retirent pas d’argent : la société garde son résultat."), "warn"); return; }
+    const lock = calendarLock(payload);
+    if (lock) { toast(lock.message, "warn"); return; }
     const previous = state.pending[key];
     if (!previous && !isFreeAction(payload) && countedActions().length >= actionLimit()) {
       toast(`${t("forecast.limitReached")} ${t("forecast.removeHint")}`, "warn");
@@ -427,6 +752,21 @@
   // `champ` carries a text field across the re-render: what was typed and where the caret was. A
   // field rewritten from state without it loses the caret to position zero, and the next digit goes
   // in at the front — 937 typed one key at a time arrived as 739.
+  // The workshop is a full page: its scroll and the field being used survive a redraw.
+  function keepAtelierScroll(selector = null, caret = null) {
+    ui.atelierRestore = { main: document.querySelector(".atelier-main")?.scrollTop || 0, page: window.scrollY || 0, selector, caret };
+  }
+  function restoreAtelierScroll() {
+    const r = ui.atelierRestore;
+    ui.atelierRestore = null;
+    if (!r) return;
+    const main = document.querySelector(".atelier-main");
+    if (main) main.scrollTop = r.main;
+    window.scrollTo(0, r.page);
+    const cible = r.selector ? document.querySelector(r.selector) : null;
+    if (cible) { cible.focus({ preventScroll: true }); if (r.caret != null && typeof cible.setSelectionRange === "function") { try { cible.setSelectionRange(r.caret, r.caret); } catch (e) { /* range inputs have no caret */ } } }
+  }
+
   function rememberDrawer(selector = null, champ = null) {
     const body = document.querySelector(".drawer-body");
     ui.restore = { scrollTop: body?.scrollTop || 0, selector, champ };
@@ -441,7 +781,7 @@
   }
 
   function emptyEffects() {
-    return { oneTimeCosts: 0, cashAdjustment: 0, vetTrainingHours: 0, supportTrainingHours: 0, trainingHoursByPerson: {}, supportReserved: 0, facilityHoursLost: 0, relocationLoss: 0, advancedDemand: 0, routineDemand: 0, severance: 0, climateShock: 0, fatigueRelief: 0, focusTransition: 0, recruitment: [], departures: [] };
+    return { oneTimeCosts: 0, investissements: 0, produitCession: 0, valeurSortie: 0, dividende: 0, cashAdjustment: 0, vetTrainingHours: 0, supportTrainingHours: 0, trainingHoursByPerson: {}, supportReserved: 0, facilityHoursLost: 0, relocationLoss: 0, advancedDemand: 0, routineDemand: 0, severance: 0, climateShock: 0, fatigueRelief: 0, focusTransition: 0, recruitment: [], departures: [] };
   }
 
   function combineEffects(total, effect) {
@@ -485,23 +825,36 @@
     }
     if (p.kind === "equipment-acquire" && D.equipment[p.targetId]) {
       target.equipment[p.targetId][p.mode === "lease" ? "leased" : "owned"] += 1;
-      if (chargeCosts && p.mode !== "lease") effect.oneTimeCosts += D.equipment[p.targetId].purchase;
+      if (chargeCosts && p.mode !== "lease") immobiliser(target, effect, "equipement", p.targetId, D.equipment[p.targetId].purchase);
     }
     if (p.kind === "equipment-remove" && D.equipment[p.targetId]) {
       const field = p.mode === "lease" ? "leased" : "owned";
       if (target.equipment[p.targetId][field] > 0) {
         target.equipment[p.targetId][field] -= 1;
-        if (chargeCosts && field === "owned") effect.cashAdjustment += D.equipment[p.targetId].purchase * .4;
+        // Sold at 40 % of its price: the sale is income, and what was not yet depreciated leaves the books.
+        if (chargeCosts && field === "owned") { effect.produitCession += D.equipment[p.targetId].purchase * .4; effect.valeurSortie += sortirImmobilisation(target, "equipement", p.targetId); }
       }
     }
     if (p.kind === "room-add" && D.rooms[p.targetId]) {
       target.rooms[p.targetId] += 1;
-      if (chargeCosts) effect.oneTimeCosts += D.rooms[p.targetId].fitout;
+      if (chargeCosts) immobiliser(target, effect, "salle", p.targetId, D.rooms[p.targetId].fitout);
     }
-    if (p.kind === "room-close" && D.rooms[p.targetId] && target.rooms[p.targetId] > 0) target.rooms[p.targetId] -= 1;
+    if (p.kind === "room-close" && D.rooms[p.targetId] && target.rooms[p.targetId] > 0) {
+      target.rooms[p.targetId] -= 1;
+      if (chargeCosts) effect.valeurSortie += sortirImmobilisation(target, "salle", p.targetId);
+    }
     if (p.kind === "salary") {
-      const person = target.staff.find((item) => item.id === p.targetId);
+      const person = target.staff.find((item) => item.id === p.targetId && !item.gerant);
       if (person) person.salary = clamp(Number(p.value), Math.round(person.baseSalary * .8), Math.round(person.baseSalary * 1.3));
+    }
+    // A dividend leaves the company's cash for the owners. It is decided on closed accounts and is
+    // never a cost: the result does not move, the treasury and the equity do.
+    if (p.kind === "dividend" && chargeCosts) effect.dividende += Math.max(0, Math.round(Number(p.value) || 0));
+    // The owners decide what the manager takes: from nothing to well above a salary. It moves the
+    // accounts, the owners' own scoreboard and (in Belgium) the reduced tax band — not the team.
+    if (p.kind === "manager-pay") {
+      const person = target.staff.find((item) => item.id === p.targetId && item.gerant);
+      if (person) person.salary = clamp(Math.round(Number(p.value) || 0), 0, MANAGER_PAY_MAX);
     }
     if (p.kind === "schedule") {
       target.staff = target.staff.map((person) => {
@@ -524,7 +877,8 @@
       const blockedUntil = Number(target.rehireBlocked?.[p.targetId] || 0);
       const accepted = Boolean(candidate && salary >= candidate.expectedSalary && blockedUntil <= target.year);
       if (candidate && accepted && !target.staff.some((person) => person.id === candidate.id)) {
-        target.staff.push(normalizeStaff({ ...candidate, salary, hiredYear: target.year, secondaryService: "", secondaryShare: 0 }));
+        // A candidate who says she also takes another service arrives with that share (data.js › candidates).
+        target.staff.push(normalizeStaff({ ...candidate, salary, hiredYear: target.year, secondaryService: candidate.secondaryService || "", secondaryShare: candidate.secondaryService ? candidate.secondaryShare || 0 : 0 }));
       }
       if (chargeCosts && candidate) effect.oneTimeCosts += candidate.postingFee;
       effect.recruitment.push({ candidateId: p.targetId, salary, accepted });
@@ -536,10 +890,10 @@
         target.staff.splice(index, 1);
         target.rehireBlocked = { ...(target.rehireBlocked || {}), [person.id]: target.year + 1 };
         if (chargeCosts) {
-          const severance = person.salary * SEVERANCE_SHARE;
+          const severance = person.salary * D.staffModel.severanceShare;
           effect.oneTimeCosts += severance;
           effect.severance += severance;
-          effect.climateShock += DEPARTURE_CLIMATE;
+          effect.climateShock += D.staffModel.departureClimate;
           effect.departures.push({ id: person.id, name: person.name, reason: "fired" });
         }
       }
@@ -580,7 +934,7 @@
     }
     if (p.kind === "parking") {
       target.location.parking = Boolean(p.value);
-      if (chargeCosts && p.value) effect.oneTimeCosts += D.locations[target.location.sectorId].parkingCost;
+      if (chargeCosts && p.value) immobiliser(target, effect, "durabilite", "parking", D.locations[target.location.sectorId].parkingCost);
     }
     if (p.kind === "marketing-strategy" && D.marketingStrategies[p.strategy]?.[p.targetId]) target.marketing[p.strategy] = p.targetId;
     if (p.kind === "social-action") {
@@ -622,7 +976,7 @@
         target.sustainability.energyUpgrade = p.value;
         if (chargeCosts && was !== p.value && p.value !== "none") {
           const choice = S.energyUpgrades[p.value];
-          effect.oneTimeCosts += choice.once;
+          immobiliser(target, effect, "durabilite", p.value, choice.once);
           effect.supportTrainingHours += choice.supportHours || 0;
           effect.facilityHoursLost += choice.facilityHoursLost || 0;
         }
@@ -632,7 +986,9 @@
         target.sustainability[p.targetId] = Boolean(p.value);
         const choice = S.interventions[p.targetId];
         if (chargeCosts && !was && p.value && choice) {
-          effect.oneTimeCosts += choice.once || 0;
+          // A heat pump or panels are installations, depreciated; an access plan is a programme, an expense.
+          if (p.targetId === "accessPlan") effect.oneTimeCosts += choice.once || 0;
+          else immobiliser(target, effect, "durabilite", p.targetId, choice.once || 0);
           effect.facilityHoursLost += choice.facilityHoursLost || 0;
         }
       }
@@ -651,6 +1007,59 @@
       }
     }
     return effect;
+  }
+
+  // Investments are not costs of the year they are paid: they join the clinic's assets and are
+  // depreciated over their period (data.js › paysProfils › amortissement). The treasury pays them in full.
+  function immobiliser(target, effect, type, ref, montant) {
+    if (!(montant > 0)) return;
+    const duree = Math.max(1, Math.round({ equipement: D.financeModel.depreciationEquipment, salle: D.financeModel.depreciationRoom, durabilite: D.financeModel.depreciationSustainability }[type] || 5));
+    effect.investissements += montant;
+    if (!Array.isArray(target.immobilisations)) target.immobilisations = [];
+    target.immobilisations.push({ type, ref, montant, debut: target.year, duree });
+  }
+  // What an asset is still worth in the books at the start of `year`: its price, less the years
+  // already depreciated.
+  function valeurNette(immo, year) {
+    return immo.montant * Math.max(0, 1 - Math.max(0, year - immo.debut) / immo.duree);
+  }
+  // An asset sold or closed leaves the books; returns the value not yet depreciated. Assets the
+  // clinic started with are not on the schedule (counted as already depreciated), so 0.
+  function sortirImmobilisation(target, type, ref) {
+    const liste = Array.isArray(target.immobilisations) ? target.immobilisations : [];
+    for (let i = liste.length - 1; i >= 0; i -= 1) {
+      if (liste[i].type === type && liste[i].ref === ref) { const v = valeurNette(liste[i], target.year); liste.splice(i, 1); return v; }
+    }
+    return 0;
+  }
+  // ── The owners' money (the students are the owners) ──
+  // What the law lets the owners take this year, simplified: past profits not yet distributed (the
+  // net-assets test), and no more than leaves the year's forecast cash at zero (the 12-month
+  // liquidity test). Belgian Companies Code art. 5:142–5:144; the ⓘ says « simplifié ».
+  function dividendesVerses(clinic = state) {
+    return (clinic.history || []).reduce((sum, r) => sum + (r.financial.dividende || 0), 0);
+  }
+  function reservesDistribuables(clinic = state) {
+    return Math.max(0, (clinic.history || []).reduce((sum, r) => sum + r.financial.netResult, 0) - dividendesVerses(clinic));
+  }
+  function dividendeAutorise() {
+    const sansDividende = simulatePlan(pendingActions().filter((a) => a.payload.kind !== "dividend"));
+    return Math.max(0, Math.min(reservesDistribuables(), Math.floor(sansDividende.financial.treasury)));
+  }
+  function capitauxPropres(clinic = state) {
+    return Number(clinic.setup?.startingTreasury || 0) + (clinic.history || []).reduce((sum, r) => sum + r.financial.netResult, 0) - dividendesVerses(clinic);
+  }
+  // What the owners received, year by year: the manager's pay net of her contributions, and the
+  // dividends net of the withholding tax. Personal income tax is not modelled.
+  function compteAssocies(clinic = state) {
+    return (clinic.history || []).map((r) => {
+      const f = r.financial;
+      const precompte = (f.dividende || 0) * D.financeModel.dividendWithholding;
+      return { annee: r.turn, remuneration: f.remunerationGerant || 0, cotisations: f.cotisationsGerant || 0, dividende: f.dividende || 0, precompte, net: (f.remunerationGerant || 0) - (f.cotisationsGerant || 0) + (f.dividende || 0) - precompte };
+    });
+  }
+  function dotationsAnnee(clinic) {
+    return (clinic.immobilisations || []).filter((x) => clinic.year >= x.debut && clinic.year < x.debut + x.duree).reduce((sum, x) => sum + x.montant / x.duree, 0);
   }
 
   function plannedState() {
@@ -683,7 +1092,9 @@
     return missing;
   }
 
+  const MANAGER_PAY_MAX = 150000;
   function salaryCapacityMultiplier(person) {
+    if (person.gerant) return 1;
     return 1 + clamp((person.salary / Math.max(1, person.baseSalary) - 1) * .6, -.06, .04);
   }
 
@@ -693,19 +1104,20 @@
     const supportByService = Object.fromEntries(D.services.map((service) => [service.id, 0]));
     const climate = Number(clinic.social?.staffClimate ?? 50);
     // Morale changes absence: a low climate raises it, a high climate lowers it.
-    const moraleRate = climate < 50 ? Math.min(.08, (50 - climate) * .004) : climate > 60 ? -Math.min(.03, (climate - 60) * .002) : 0;
+    const stm = D.staffModel;
+    const moraleRate = climate < stm.moraleLow ? Math.min(stm.moraleLowCap, (stm.moraleLow - climate) * stm.moraleLowSlope) : climate > stm.moraleHigh ? -Math.min(stm.moraleHighCap, (climate - stm.moraleHigh) * stm.moraleHighSlope) : 0;
     const fatigueRelief = clamp(Number(effects.fatigueRelief || 0), 0, 1);
     const preliminary = clinic.staff.map((person) => {
       const contractedHours = person.capacity * salaryCapacityMultiplier(person);
       // Last year's overtime carries into this year as extra absence.
-      const fatigueRate = Math.min(.09, Number(person.lastOvertimeRatio || 0) * FATIGUE_ABSENCE_PER_OVERTIME) * (1 - fatigueRelief);
+      const fatigueRate = Math.min(.09, Number(person.lastOvertimeRatio || 0) * D.staffModel.fatigueAbsencePerOvertime) * (1 - fatigueRelief);
       const expectedAbsenceHours = contractedHours * Math.max(0, hr.absenteeism + fatigueRate + moraleRate);
       const gross = contractedHours - expectedAbsenceHours;
       const roleTraining = person.role === "vet" ? effects.vetTrainingHours : effects.supportTrainingHours;
       const sameRoleCount = Math.max(1, clinic.staff.filter((item) => item.role === person.role).length);
       const trainingHours = roleTraining / sameRoleCount + Number(effects.trainingHoursByPerson?.[person.id] || 0);
       // People hired this year spend a quarter of their time learning the clinic.
-      const onboardingHours = person.hiredYear === clinic.year ? Math.max(0, gross - trainingHours) * HIRE_ONBOARDING : 0;
+      const onboardingHours = person.hiredYear === clinic.year ? Math.max(0, gross - trainingHours) * D.staffModel.hireOnboarding : 0;
       return { person, contractedHours, expectedAbsenceHours, fatigueAbsenceHours: contractedHours * fatigueRate, moraleAbsenceHours: contractedHours * moraleRate, onboardingHours, grossHours: gross, trainingHours, beforeDuties: Math.max(0, gross - trainingHours - onboardingHours) };
     });
     const stock = D.stockStrategies[clinic.operations.stockStrategy];
@@ -839,7 +1251,7 @@
   }
 
   function acceptedText(known) {
-    return known.exact ? money(known.low) : `${money(known.low).replace(/\s?€$/, "")}–${money(known.high)}`;
+    return known.exact ? money(known.low) : `${money(known.low)}–${money(known.high)}`;
   }
 
   function acceptedPrice(service, clinic) {
@@ -859,7 +1271,7 @@
     const willingness = acceptedPrice(service, clinic);
     const priceRatio = serviceState.price / Math.max(1, willingness);
     const priceEffect = priceRatio <= 1
-      ? 1 + (1 - priceRatio) * service.elasticity * .35
+      ? 1 + (1 - priceRatio) * service.elasticity * D.clientModel.priceUnderResponse
       // Above willingness the response decays instead of running into a flat clamp. A flat floor
       // could not work here: the old linear term reached zero at ratios from 1.65 (retail) to 5.55
       // (emergency), so every service plateaued at a different price and none could be priced out
@@ -868,17 +1280,17 @@
       // a price rise is a decision: at 2.2 a consultation priced 20% over willingness still kept 92%
       // of its requests. Rescue prices above willingness by default, so it is the scenario this
       // constant moves; Balanced and Growth sit below it and never evaluate this branch at all.
-      : Math.exp(-(priceRatio - 1) * service.elasticity * 4 * segment.priceSensitivity);
+      : Math.exp(-(priceRatio - 1) * service.elasticity * D.clientModel.priceOverDecay * segment.priceSensitivity);
     const geo = D.marketingStrategies.geomarketing[clinic.marketing.geomarketing] || D.marketingStrategies.geomarketing.none;
     const competition = location.competition;
-    const socialTrust = 1 + (clinic.social.clientTrust - 50) / 500;
+    const socialTrust = 1 + (clinic.social.clientTrust - 50) / D.clientModel.trustDemandDivisor;
     const sm = D.socialModel || {};
     // Referring vets send imaging and specialist cases: their support moves advanced requests only.
     const referral = ADVANCED_SERVICES.has(service.id) ? Math.max(.2, 1 + (clinic.social.referralSupport - 50) * (sm.referralSlope ?? 1 / 350)) : 1;
     const pressure = ROUTINE_SERVICES.has(service.id) ? 1 + Math.max(0, clinic.social.communityPressure - 50) * (sm.pressureDemandSlope ?? 1 / 500) : 1;
     const periods = Object.entries(clinic.operations.openingPeriods).reduce((sum, [id, active]) => sum + (active ? D.openingPeriods[id].demand : 0), 0);
     const emergency = service.id === "emergency" && clinic.operations.openingPeriods.night ? D.openingPeriods.night.emergencyDemand : 0;
-    const parking = clinic.location.parking && (clinic.marketFocus === "routine" || clinic.marketFocus === "budget" || service.id === "boarding") ? 1.08 : 1;
+    const parking = clinic.location.parking && (clinic.marketFocus === "routine" || clinic.marketFocus === "budget" || service.id === "boarding") ? D.clientModel.parkingDemand : 1;
     const actionDemand = 1 + (ADVANCED_SERVICES.has(service.id) ? effects.advancedDemand : 0) + (ROUTINE_SERVICES.has(service.id) ? effects.routineDemand : 0);
     const accessDemand = clinic.sustainability.accessPlan ? 1 + D.sustainability.interventions.accessPlan.demand : 1;
     return Math.max(0, Math.round(
@@ -988,12 +1400,14 @@
   function constraintBreakdown(report) {
     const rows = new Map();
     (report.serviceResults || []).filter((row) => row.active).forEach((row) => {
-      const key = constraintKey(row.bottleneck);
-      if (!rows.has(key)) rows.set(key, { key, reason: row.bottleneck, unserved: 0, services: [] });
-      const entry = rows.get(key);
-      const missed = Math.max(0, row.demand - row.honored);
-      entry.unserved += missed;
-      if (missed > 0) entry.services.push({ id: row.id, unserved: missed });
+      const parts = row.lostBy?.length ? row.lostBy : [{ reason: row.bottleneck, count: Math.max(0, row.demand - row.honored) }];
+      parts.forEach((l) => {
+        const key = constraintKey(l.reason);
+        if (!rows.has(key)) rows.set(key, { key, reason: l.reason, unserved: 0, services: [] });
+        const entry = rows.get(key);
+        entry.unserved += l.count;
+        if (l.count > 0) entry.services.push({ id: row.id, unserved: l.count });
+      });
     });
     return [...rows.values()].sort((a, b) => b.unserved - a.unserved).map((entry) => ({ ...entry, services: entry.services.sort((a, b) => b.unserved - a.unserved) }));
   }
@@ -1029,6 +1443,7 @@
   }
 
   function simulateYear(clinic, before, effects, actions, options = {}) {
+    applyModelRules(clinic.modelRules);
     const resources = initialResources(clinic, effects);
     const stockPlan = D.stockStrategies[clinic.operations.stockStrategy] || D.stockStrategies.basic;
     let totalExpected = 0;
@@ -1049,7 +1464,7 @@
     const plans = D.services.slice().sort((a, b) => a.priority - b.priority).map((service) => {
       const serviceState = clinic.services[service.id];
       const openedThisYear = serviceState.openedYear === clinic.year;
-      const expectedDemand = Math.round(projectedDemand(service, clinic, effects) * (openedThisYear ? SERVICE_RAMP_UP : 1));
+      const expectedDemand = Math.round(projectedDemand(service, clinic, effects) * (openedThisYear ? D.clientModel.serviceRampUp : 1));
       // "Exact figures" must mean exact. The forecast clips demand at capacity BEFORE the swing is
       // applied, so a good year can never beat the projection while a bad one misses it: measured
       // over 300 class codes, the largest year-3 gap is 0.00 €. In exact mode the swing is off on
@@ -1057,7 +1472,9 @@
       // where uncertainty is the lesson.
       const demandVaries = clinic.setup?.forecastPrecision !== "exact";
       const demand = options.actual && demandVaries ? Math.round(expectedDemand * demandSwing(clinic, service.id)) : expectedDemand;
-      const missing = missingRequirements(service, clinic);
+      // With no vet at all, the cause is that, not a missing skill (owner, 2026-11-06).
+      const sansVeto = service.vetShare > 0 && !clinic.staff.some((person) => person.role === "vet");
+      const missing = sansVeto ? [{ type: "noVet" }] : missingRequirements(service, clinic);
       // A rushed case comes back a share of the time: the return uses the same vet, support and room
       // time again, consumes supplies, and earns nothing. Folding it into the time per served case
       // lets every capacity below — staff, rooms, equipment — feel it without a second pass.
@@ -1070,15 +1487,19 @@
       const vetPool = resources.vetByService[service.id] || 0;
       const supportPool = resources.supportByService[service.id] || 0;
       // Drop-off animals wait outside the room while support staff work, freeing room time.
-      const facilityDuration = caseDuration(service, clinic) * (1 + returnRate) * (1 + slowdown) * (dropoffActive(clinic) && DROPOFF_SERVICES.has(service.id) ? DROPOFF_ROOM_FACTOR : 1);
+      const facilityDuration = caseDuration(service, clinic) * (1 + returnRate) * (1 + slowdown) * (dropoffActive(clinic) && DROPOFF_SERVICES.has(service.id) ? D.operationsModel.dropoffRoomFactor : 1);
       // Vet hours can cover the support part of a case; support hours cannot cover vet work.
       const unstaffed = vd > 0 && vetPool <= 0 ? { type: "unstaffed", id: "vet" } : vd + sd > 0 && vetPool + supportPool <= 0 ? { type: "unstaffed", id: "support" } : null;
       const staffCaps = { demand, vet: vd > 0 ? Math.floor(vetPool / vd) : Infinity, support: vd + sd > 0 ? Math.floor((vetPool + supportPool) / (vd + sd)) : Infinity };
       const runnable = serviceState.active && !missing.length && !unstaffed;
       const staffCap = runnable ? Math.min(...Object.values(staffCaps)) : 0;
+      // Requests lost to a stock-out are turned away without using the room or the machine, so the
+      // facilities are shared out among the cases stock leaves (owner, 2026-11-06: a room refused
+      // cases while it sat idle for the time of the stock-outs).
+      const stockGarde = STOCK_SERVICES.has(service.id) ? 1 - (stockPlan.stockoutRate || 0) : 1;
       if (runnable) {
-        service.roomIds.forEach((id) => { facilityNeed.room[id] = (facilityNeed.room[id] || 0) + staffCap * facilityDuration; });
-        service.equipmentIds.forEach((id) => { facilityNeed.equipment[id] = (facilityNeed.equipment[id] || 0) + staffCap * facilityDuration; });
+        service.roomIds.forEach((id) => { facilityNeed.room[id] = (facilityNeed.room[id] || 0) + staffCap * stockGarde * facilityDuration; });
+        service.equipmentIds.forEach((id) => { facilityNeed.equipment[id] = (facilityNeed.equipment[id] || 0) + staffCap * stockGarde * facilityDuration; });
       }
       return { service, serviceState, demand, expectedDemand, rampUp: openedThisYear, missing, vd, sd, supportPool, facilityDuration, unstaffed, staffCaps, staffCap };
     });
@@ -1135,20 +1556,28 @@
         }
         totalHonored += honored;
         if (ADVANCED_SERVICES.has(service.id)) advancedServed += honored;
-        const key = `${bottleneck.type}:${bottleneck.id || ""}`;
-        if (!unmet[key]) unmet[key] = { count: 0, reason: bottleneck };
-        unmet[key].count += Math.max(0, demand - honored);
+        // One attribution of refusals everywhere: the split by cause. The service's cause is the one
+        // that lost the most requests (the first on a tie: staff, then room or machine, then stock).
+        // It used to be the tightest cap before stock-outs, which put every refusal of a service
+        // under it — "room full, 294" where the room cost 146 and stock-outs 148.
+        if (honored < demand && lostBy.length) bottleneck = lostBy.reduce((best, l) => (l.count > best.count ? l : best)).reason;
+        (lostBy.length ? lostBy : [{ reason: bottleneck, count: 0 }]).forEach((l) => {
+          const key = `${l.reason.type}:${l.reason.id || ""}`;
+          if (!unmet[key]) unmet[key] = { count: 0, reason: l.reason };
+          unmet[key].count += l.count;
+        });
       }
       const serviceRevenue = honored * serviceState.price;
       const circularMultiplier = D.sustainability.wasteStrategies[clinic.sustainability.wasteStrategy].variableCostMultiplier;
       const returnVisits = Math.round(honored * (servicePace(clinic, service.id).returnRate || 0));
-      const variable = (serviceRevenue + returnVisits * serviceState.price) * service.variableCost * circularMultiplier;
+      // Supplies cost the same per case whatever the price: a case that does not come uses nothing.
+      const variable = (honored + returnVisits) * service.supplyCost * circularMultiplier;
       revenue += serviceRevenue;
       baseVariableCosts += variable;
       serviceState.lastDemand = demand;
       serviceState.lastHonored = honored;
       serviceState.lastBottleneck = bottleneck;
-      results.push({ id: service.id, active: serviceState.active, demand, honored, lostBy, returnVisits, acceptedPrice: Math.round(acceptedPrice(service, clinic)), price: serviceState.price, revenue: serviceRevenue, variableCosts: variable, contributionPerCase: serviceState.price * (1 - service.variableCost), missing, bottleneck, vetDuration: vd, supportDuration: sd, vetUsed, supportUsed, vetCoverHours: Math.max(0, vetUsed - honored * vd), staffCap, expectedDemand, rampUp, stockoutLost });
+      results.push({ id: service.id, active: serviceState.active, demand, honored, lostBy, returnVisits, acceptedPrice: Math.round(acceptedPrice(service, clinic)), price: serviceState.price, revenue: serviceRevenue, variableCosts: variable, contributionPerCase: serviceState.price - service.supplyCost, margeReelle: honored ? (serviceRevenue - variable) / honored : serviceState.price - service.supplyCost * circularMultiplier * (1 + (servicePace(clinic, service.id).returnRate || 0)), missing, bottleneck, vetDuration: vd, supportDuration: sd, roomDuration: service.roomIds.length ? facilityDuration : 0, vetUsed, supportUsed, vetCoverHours: Math.max(0, vetUsed - honored * vd), staffCap, expectedDemand, rampUp, stockoutLost });
     });
     const facilityRows = [...Object.keys(D.rooms).map((id) => ["room", id]), ...Object.keys(D.equipment).map((id) => ["equipment", id])]
       .filter(([kind, id]) => (facilityCapacity[kind][id] || 0) > 0 || (facilityNeed[kind][id] || 0) > 0)
@@ -1196,7 +1625,7 @@
       staffRow.usedHours = staffRow.assignments.reduce((sum, assignment) => sum + assignment.usedHours, 0);
       // Overtime is paid only for hours actually worked beyond available time.
       staffRow.overtimeHours = Math.max(0, staffRow.usedHours - staffRow.availableHours);
-      staffRow.overtimePay = staffRow.overtimeHours * staffRow.hourlyRate * OVERTIME_PREMIUM;
+      staffRow.overtimePay = staffRow.overtimeHours * staffRow.hourlyRate * D.staffModel.overtimePremium;
       // Hours the clinic pays for and nobody works. There is one definition and this is it: five
       // others existed, agreeing only when nothing was blocked, and one of them counted an
       // over-allocation as free time — 1 945 idle hours reported where 1 518 were real. Blocked
@@ -1205,13 +1634,19 @@
       staffRow.workload = staffRow.availableHours ? staffRow.usedHours / staffRow.availableHours : 0;
     });
     const overtimeHours = resources.staffRows.reduce((sum, row) => sum + row.overtimeHours, 0);
-    const overtimePay = resources.staffRows.reduce((sum, row) => sum + row.overtimePay, 0);
-    const overtimeCost = overtimePay * (1 + SOCIAL_CHARGE_RATE);
-    const overtimeClimate = -Math.min(8, resources.staffRows.reduce((sum, row) => sum + (row.availableHours ? row.overtimeHours / row.availableHours : 0), 0) * 20);
+    // The manager is self-employed: her extra hours are worked, not paid. Only employees' overtime costs money.
+    const gerants = new Set(clinic.staff.filter((person) => person.gerant).map((person) => person.id));
+    const overtimePay = resources.staffRows.reduce((sum, row) => sum + (gerants.has(row.id) ? 0 : row.overtimePay), 0);
+    const overtimeCost = overtimePay * (1 + D.financeModel.socialChargeRate);
+    const overtimeClimate = -Math.min(D.climateModel.overtimeCap, resources.staffRows.reduce((sum, row) => sum + (row.availableHours ? row.overtimeHours / row.availableHours : 0), 0) * D.climateModel.overtimeWeight);
     const stock = D.stockStrategies[clinic.operations.stockStrategy];
     const variableCosts = baseVariableCosts * stock.multiplier;
-    const payroll = clinic.staff.reduce((sum, person) => sum + person.salary, 0);
-    const socialCharges = payroll * SOCIAL_CHARGE_RATE;
+    // Employees: gross salary + employer charges. The manager: her remuneration + self-employed
+    // contributions, capped (data.js › paysProfils).
+    const payroll = clinic.staff.filter((person) => !person.gerant).reduce((sum, person) => sum + person.salary, 0);
+    const socialCharges = payroll * D.financeModel.socialChargeRate;
+    const remunerationGerant = clinic.staff.filter((person) => person.gerant).reduce((sum, person) => sum + person.salary, 0);
+    const cotisationsGerant = clinic.staff.filter((person) => person.gerant).reduce((sum, person) => sum + Math.min(person.salary, D.financeModel.managerContributionCap) * D.financeModel.managerContributionRate, 0);
     const ownedMaintenance = Object.entries(clinic.equipment).reduce((sum, [id, counts]) => sum + counts.owned * D.equipment[id].purchase * D.equipment[id].maintenanceRate, 0);
     const leaseCosts = Object.entries(clinic.equipment).reduce((sum, [id, counts]) => sum + counts.leased * D.equipment[id].lease, 0);
     const roomRent = Object.entries(clinic.rooms).reduce((sum, [id, qty]) => sum + Math.max(0, qty - D.rooms[id].baseIncluded) * D.rooms[id].annualRent, 0);
@@ -1222,7 +1657,7 @@
     const hrCost = D.hrStrategies[clinic.hr.strategy].cost;
     const marketingCost = Object.entries(clinic.marketing).reduce((sum, [strategy, level]) => sum + (D.marketingStrategies[strategy]?.[level]?.cost || 0), 0);
     const sustainabilityCost = sustainabilityAnnualCost(clinic);
-    const admin = 14000 + D.services.filter((service) => clinic.services[service.id].active).length * 900;
+    const admin = D.financeModel.adminBase + D.services.filter((service) => clinic.services[service.id].active).length * D.financeModel.adminPerService;
     let loanPayment = 0;
     let loanPrincipalPayment = 0;
     let loanInterest = 0;
@@ -1235,16 +1670,45 @@
       nextLoan.yearsRemaining -= 1;
       if (nextLoan.yearsRemaining <= 0 || nextLoan.remaining < 1) nextLoan = null;
     }
-    const operatingCosts = openingCosts + dropoffCost + stock.cost + hrCost + marketingCost + sustainabilityCost + admin + loanInterest;
-    const fixedCosts = payroll + socialCharges + facilityCosts + operatingCosts + effects.oneTimeCosts;
-    const totalCosts = variableCosts + fixedCosts + overtimeCost;
+    // The income statement (compte de résultat), as a Belgian or French accountant would read it:
+    // CA − achats − charges − personnel − gérant = EBE; − amortissements ± cession − intérêts = résultat
+    // avant impôt; − impôt = résultat net. Investments are depreciated, never charged in one year.
+    const operatingCosts = openingCosts + dropoffCost + stock.cost + hrCost + marketingCost + sustainabilityCost + admin;
+    const chargesExternes = facilityCosts + operatingCosts;
+    const personnel = payroll + socialCharges + overtimeCost;
+    const gerant = remunerationGerant + cotisationsGerant;
     const communeLast = lastCommitment(clinic, "commune");
     const grant = communeLast?.ok && (investsInSustainability(clinic) || !D.commitmentModel?.grantNeedsInvestment) ? (D.commitmentModel?.grant || 0) : 0;
-    const operatingResult = revenue - totalCosts + grant;
-    const tax = operatingResult > 0 ? operatingResult * .25 : 0;
+    const margeBrute = revenue - variableCosts;
+    const ebe = margeBrute + grant - chargesExternes - effects.oneTimeCosts - personnel - gerant;
+    // Simple accounts: a purchase is paid and counted once, in the year it is made; nothing is
+    // depreciated, so nothing has a book value when it leaves.
+    const simples = !comptesDetailles(clinic);
+    const amortissements = simples ? 0 : dotationsAnnee(clinic);
+    const valeurSortie = simples ? 0 : effects.valeurSortie;
+    const depensesPonctuelles = effects.oneTimeCosts + (simples ? effects.investissements : 0);
+    const resultatCession = effects.produitCession - valeurSortie;
+    // Recurring fixed costs: what break-even must cover every year. One-off expenses and overtime are not in it.
+    const fixedCosts = chargesExternes + payroll + socialCharges + gerant + amortissements + loanInterest;
+    const totalCosts = variableCosts + fixedCosts + overtimeCost + depensesPonctuelles + valeurSortie;
+    // What the year's activity leaves before what is paid once, interest and tax.
+    const resultatCourant = margeBrute + grant - chargesExternes - personnel - gerant;
+    const operatingResult = revenue + grant + effects.produitCession - totalCosts;
+    // Corporate tax, with the small-company band when the manager is paid enough (BE), on profit
+    // after losses carried forward from earlier years.
+    const pertesAnterieures = Number(clinic.finance.pertesReportees || 0);
+    const imposable = Math.max(0, operatingResult - pertesAnterieures);
+    const tauxReduitOk = !simples && D.financeModel.taxReducedRate < D.financeModel.taxRate && remunerationGerant >= D.financeModel.taxReducedMinPay;
+    const tranche = tauxReduitOk ? Math.min(imposable, D.financeModel.taxReducedBand) : 0;
+    const tax = tranche * D.financeModel.taxReducedRate + (imposable - tranche) * D.financeModel.taxRate;
+    const pertesReportees = operatingResult < 0 ? pertesAnterieures - operatingResult : Math.max(0, pertesAnterieures - operatingResult);
     const netResult = operatingResult - tax;
     const financingCashAdjustment = effects.cashAdjustment - loanPrincipalPayment;
-    const treasury = clinic.treasury + financingCashAdjustment + netResult;
+    // Cash is not profit: depreciation and the book value of what left are added back; investments
+    // are paid in full the year they are made.
+    // Simple accounts: the associates take a fixed share of a profit each year (data.js › partAssocies).
+    const retraitAssocies = simples ? Math.max(0, netResult) * (D.financeModel.partAssocies || 0) : 0;
+    const treasury = clinic.treasury + financingCashAdjustment + netResult + (simples ? 0 : amortissements + valeurSortie - effects.investissements) - effects.dividende - retraitAssocies;
     const honoredRate = totalDemand ? totalHonored / totalDemand : 0;
     const usedTeamHours = resources.staffRows.reduce((sum, row) => sum + row.usedHours, 0);
     const staffUse = (resources.totalVet + resources.totalSupport) ? usedTeamHours / (resources.totalVet + resources.totalSupport) : 0;
@@ -1252,9 +1716,11 @@
     if (mainConstraint.type === "none" && netResult < 0) mainConstraint = { type: "revenue" };
     const hr = D.hrStrategies[clinic.hr.strategy];
     const communication = D.marketingStrategies.communication[clinic.marketing.communication];
-    const periodClimate = Object.entries(clinic.operations.openingPeriods).reduce((sum, [id, active]) => sum + (active ? D.openingPeriods[id].climate : 0), 0) * (clinic.hr.strategy === "supportive" ? .5 : 1);
-    const averagePayRatio = clinic.staff.reduce((sum, person) => sum + person.salary / person.baseSalary, 0) / Math.max(1, clinic.staff.length);
-    const payClimate = clamp((averagePayRatio - 1) * 40, -4, 4);
+    const periodClimate = Object.entries(clinic.operations.openingPeriods).reduce((sum, [id, active]) => sum + (active ? D.openingPeriods[id].climate : 0), 0) * (clinic.hr.strategy === "supportive" ? D.climateModel.supportiveHoursFactor : 1);
+    // The team's pay climate is about employees; what the owners pay themselves is their own affair.
+    const salaries = clinic.staff.filter((person) => !person.gerant);
+    const averagePayRatio = salaries.length ? salaries.reduce((sum, person) => sum + person.salary / person.baseSalary, 0) / salaries.length : 1;
+    const payClimate = clamp((averagePayRatio - 1) * D.climateModel.payWeight, -D.climateModel.payCap, D.climateModel.payCap);
     const social = clone(clinic.social);
     const accessTrust = clinic.sustainability.accessPlan ? D.sustainability.interventions.accessPlan.trust : 0;
     const paceMix = results.reduce((sum, result) => {
@@ -1283,22 +1749,24 @@
     const previousPerCase = clinic.history?.length ? clinic.history[clinic.history.length - 1].carbon?.perCase : clinic.carbonBaseline?.perCase;
     const carbonNow = calculateCarbon(clinic, results);
     const carbonTrust = previousPerCase && carbonNow.perCase ? clamp((previousPerCase - carbonNow.perCase) / previousPerCase * (sm.carbonTrustWeight || 0), -(sm.carbonTrustCap || 0), sm.carbonTrustCap || 0) : 0;
-    const trustParts = { served: honoredRate * 3.2 - (1 - honoredRate) * 5.8, communication: communication.trust * communicationStrength(clinic), access: accessTrust, pace: paceTrust, price: priceTrust, refused: refusedTrust, carbon: carbonTrust, dropoff: dropoffActive(clinic) ? 1 : 0, stockouts: -Math.min(4, stockoutShare * 30) };
+    const trustParts = { served: honoredRate * tm.servedGain - (1 - honoredRate) * tm.refusedLoss, communication: communication.trust * communicationStrength(clinic), access: accessTrust, pace: paceTrust, price: priceTrust, refused: refusedTrust, carbon: carbonTrust, dropoff: dropoffActive(clinic) ? tm.dropoffTrust : 0, stockouts: -Math.min(tm.stockoutCap, stockoutShare * tm.stockoutWeight) };
     social.clientTrust = clamp(social.clientTrust + Object.values(trustParts).reduce((sum, value) => sum + value, 0), 0, 100);
     // Rushing wears the team: each service run at a fast pace costs climate every year.
     const paceClimate = D.services.reduce((sum, service) => sum + (clinic.services[service.id]?.active ? (servicePace(clinic, service.id).climate || 0) : 0), 0);
-    const climateParts = { hr: hr.climate, openingHours: periodClimate, pay: payClimate, overtime: overtimeClimate, workload: staffUse > .94 ? -3 : staffUse >= .45 ? 1 : -1, pace: paceClimate, departure: effects.climateShock || 0 };
+    const climateParts = { hr: hr.climate, openingHours: periodClimate, pay: payClimate, overtime: overtimeClimate, workload: staffUse > D.climateModel.workloadHigh ? D.climateModel.workloadHighEffect : staffUse >= D.climateModel.workloadLow ? D.climateModel.workloadOkEffect : D.climateModel.workloadLowEffect, pace: paceClimate, departure: effects.climateShock || 0 };
     social.staffClimate = clamp(social.staffClimate + Object.values(climateParts).reduce((sum, value) => sum + value, 0), 0, 100);
     // Year-end resignations are deterministic so the forecast can warn about them.
     const retainedClimate = social.staffClimate + (hr.retention || 0);
     const payRatio = (person) => person.salary / Math.max(1, person.baseSalary);
-    const resignations = clinic.staff.filter((person) => retainedClimate < RESIGN_PAY_CLIMATE && payRatio(person) < RESIGN_PAY_RATIO - .001).map((person) => ({ id: person.id, name: person.name, reason: "pay" }));
-    if (!resignations.length && retainedClimate < RESIGN_CLIMATE && clinic.staff.length > 1) {
+    const resignations = clinic.staff.filter((person) => !person.gerant && retainedClimate < D.staffModel.resignPayClimate && payRatio(person) < D.staffModel.resignPayRatio - .001).map((person) => ({ id: person.id, name: person.name, reason: "pay" }));
+    // The manager owns the company: she can burn out (absences, slower cases), not resign from it.
+    const employees = clinic.staff.filter((person) => !person.gerant);
+    if (!resignations.length && retainedClimate < D.staffModel.resignClimate && clinic.staff.length > 1 && employees.length) {
       const overtimeRatio = (person) => {
         const row = resources.staffRows.find((item) => item.id === person.id);
         return row?.availableHours ? row.overtimeHours / row.availableHours : 0;
       };
-      const leaver = clinic.staff.slice().sort((a, b) => overtimeRatio(b) - overtimeRatio(a) || payRatio(a) - payRatio(b))[0];
+      const leaver = employees.slice().sort((a, b) => overtimeRatio(b) - overtimeRatio(a) || payRatio(a) - payRatio(b))[0];
       resignations.push({ id: leaver.id, name: leaver.name, reason: "climate" });
     }
     const demandVariance = totalExpected ? totalDemand / totalExpected - 1 : 0;
@@ -1310,11 +1778,13 @@
       ? clamp(social.communityPressure + ((sm.pressureBase ?? 40) + (1 - honoredRate) * (sm.pressureRefusedWeight ?? 150) - social.communityPressure) * sm.pressureSpeed, 0, 100)
       : clamp(social.communityPressure + (1 - honoredRate) * (sm.pressureRise ?? 5) - (honoredRate > .84 ? (sm.pressureFall ?? 2) : 0), 0, 100);
     const segment = D.segments[clinic.marketFocus];
-    const reputation = clamp(clinic.reputation + honoredRate * 4 - (1 - honoredRate) * 5 + (netResult >= 0 ? .8 : -.7) + (social.clientTrust - 50) / 75 + paceReputation, 20, 95);
+    const rm = D.reputationModel;
+    const reputation = clamp(clinic.reputation + honoredRate * rm.served - (1 - honoredRate) * rm.refused + (netResult >= 0 ? rm.profit : rm.loss) + (social.clientTrust - 50) / rm.trustDivisor + paceReputation, rm.min, rm.max);
     // Past a line, trust stops being a mood and becomes a movement of clients: they leave below 45,
     // faster below 35, and bring others above 65. The same shape as the team climate's thresholds.
     const trustMovement = social.clientTrust < (tm.fleeBelow ?? -1) ? (tm.fleeRate || 0) : social.clientTrust < (tm.leaveBelow ?? -1) ? (tm.leaveRate || 0) : social.clientTrust > (tm.referAbove ?? 101) ? (tm.referRate || 0) : 0;
-    const clientGrowth = clamp(.9 + honoredRate * .13 + (reputation - 56) * (sm.reputationGrowthWeight ?? 1 / 900) + segment.growth + (social.clientTrust - 50) * (sm.trustGrowthWeight ?? 1 / 900) + trustMovement, .78, 1.16);
+    const cm = D.clientModel;
+    const clientGrowth = clamp(cm.growthBase + honoredRate * cm.growthServedWeight + (reputation - 56) * (sm.reputationGrowthWeight ?? 1 / 900) + segment.growth + (social.clientTrust - 50) * (sm.trustGrowthWeight ?? 1 / 900) + trustMovement, cm.growthMin, cm.growthMax);
     // A refused request is a family turned away; some of them go elsewhere for good, with all their
     // other visits. The leavers are counted on their own so the results can say how many.
     const refusedLeft = Math.round(Math.max(0, totalDemand - totalHonored) * (sm.refusedLeave || 0));
@@ -1329,7 +1799,7 @@
       legacyActions: [],
       clinicSnapshot: clinicSnapshot(clinic),
       serviceResults: results,
-      financial: { grant, revenue, baseVariableCosts, variableCosts, payroll, socialCharges, overtimeHours, overtimePay, overtimeCost, ownedMaintenance, leaseCosts, roomRent, locationRent: location.rent, facilityCosts, openingCosts, dropoffCost, stockCost: stock.cost, hrCost, marketingCost, sustainabilityCost, admin, loanPayment, loanPrincipalPayment, loanInterest, oneTimeCosts: effects.oneTimeCosts, cashAdjustment: financingCashAdjustment, fixedCosts, totalCosts, operatingResult, tax, netResult, treasury, margin: revenue ? netResult / revenue : 0, breakEvenCases: avgContribution ? Math.ceil(fixedCosts / avgContribution) : 0 },
+      financial: { grant, revenue, baseVariableCosts, variableCosts, payroll, socialCharges, overtimeHours, overtimePay, overtimeCost, ownedMaintenance, leaseCosts, roomRent, locationRent: location.rent, facilityCosts, openingCosts, dropoffCost, stockCost: stock.cost, hrCost, marketingCost, sustainabilityCost, admin, loanPayment, loanPrincipalPayment, loanInterest, oneTimeCosts: effects.oneTimeCosts, depensesPonctuelles, resultatCourant, retraitAssocies, comptes: simples ? "simples" : "detailles", dividende: effects.dividende, investissements: effects.investissements, produitCession: effects.produitCession, valeurSortie, resultatCession, amortissements, margeBrute, chargesExternes, personnel, remunerationGerant, cotisationsGerant, gerant, ebe, tauxReduit: tauxReduitOk, imposable, pertesReportees, cashAdjustment: financingCashAdjustment, fixedCosts, totalCosts, operatingResult, tax, netResult, treasury, margin: revenue ? netResult / revenue : 0, breakEvenCases: avgContribution ? Math.ceil(fixedCosts / avgContribution) : 0 },
       operational: { totalDemand, totalOpportunity, totalHonored, honoredRate, mainConstraint, staffUse, startVetHours: resources.totalVet, remainingVetHours: resources.remainingVet, startSupportHours: resources.totalSupport, remainingSupportHours: resources.remainingSupport, reservedSupportHours: resources.reservedSupport, roomUse: resourceUse(resources.startRooms, resources.rooms), equipmentUse: resourceUse(resources.startEquipment, resources.equipment), advancedServed, readyServices, facilityRows, staffRows: resources.staffRows, serviceHourRows, stockoutLost: totalStockoutLost, expectedDemand: totalExpected, demandVariance },
       social: { before: clone(before.social || DEFAULT_SOCIAL), after: social, climateParts, trustParts, clientMovement: trustMovement, refusedLeft },
       carbon,
@@ -1453,10 +1923,10 @@
     return (last?.commitments || []).find((c) => c.id === id) || null;
   }
 
+  const carbonTarget = (clinic = state) => ({ balanced: .15, rescue: .08, growth: .20 })[clinic.scenarioId] || .15;
   function goalChecks(report, clinic = plannedState()) {
     const goals = [...(D.scenarios[state.scenarioId]?.goals || D.scenarios.balanced.goals)];
-    const carbonTargets = { balanced: .15, rescue: .08, growth: .20 };
-    goals.push({ id: "carbon", type: "min", metric: "carbonReduction", value: carbonTargets[state.scenarioId] || .15, label: { en: `Reduce carbon per treated case by ${Math.round((carbonTargets[state.scenarioId] || .15) * 100)}% while retaining 80% of starting case volume`, fr: `Réduire de ${Math.round((carbonTargets[state.scenarioId] || .15) * 100)} % le carbone par cas traité tout en conservant 80 % du volume initial` } });
+    goals.push({ id: "carbon", type: "min", metric: "carbonReduction", value: carbonTarget(), label: { en: `Reduce carbon per treated case by ${Math.round(carbonTarget() * 100)}% while retaining 80% of starting case volume`, fr: `Réduire de ${Math.round(carbonTarget() * 100)} % le carbone par cas traité tout en conservant 80 % du volume initial` } });
     const baselinePerCase = state.carbonBaseline?.perCase || report.carbon?.perCase || 0;
     const baselineCases = state.carbonBaseline?.totalCases || report.operational.totalHonored || 0;
     const metrics = {
@@ -1480,6 +1950,8 @@
   }
 
   function resolveTurn() {
+    // A session behind a code cannot be played until the code given in class is entered.
+    if (seanceFermee()) { toast(L(`« ${nomSeance(seanceFermee())} » opens with your instructor’s code.`, `« ${nomSeance(seanceFermee())} » s’ouvre avec le code de votre enseignant.`), "warn"); return false; }
     const actions = pendingActions();
     // Capture what the team was shown before any state is mutated by applyAction below.
     const shownPlan = simulatePlan(actions);
@@ -1509,6 +1981,14 @@
     state.reputation = report.next.reputation;
     state.social = report.next.social;
     state.finance.loan = report.next.loan;
+    state.finance.pertesReportees = report.financial.pertesReportees;
+    // A dividend beyond what the law allows is paid — and has consequences: the manager is exposed
+    // (CSA art. 5:144) and the bank refuses new credit the following year.
+    if (report.financial.dividende > 0) {
+      const permis = Math.max(0, Math.min(reservesDistribuables(before), Math.floor(report.financial.treasury + report.financial.dividende)));
+      report.dividendeAutorise = permis;
+      if (report.financial.dividende > permis + 1) { state.banqueRefusAnnee = report.turn + 1; report.dividendeIllegal = true; }
+    }
     state.staff.forEach((person) => {
       const row = report.operational.staffRows.find((item) => item.id === person.id);
       person.lastOvertimeRatio = row?.availableHours ? row.overtimeHours / row.availableHours : 0;
@@ -1592,6 +2072,7 @@
     if (payload.kind === "equipment-remove") return t("actions.equipment", { verb: payload.mode === "lease" ? t("facilities.return") : t("facilities.sell"), name: equipmentName(payload.targetId) });
     if (payload.kind === "room-add" || payload.kind === "room-close") return t("actions.room", { verb: payload.kind === "room-add" ? t("facilities.addRoom") : t("facilities.closeRoom"), name: roomName(payload.targetId) });
     if (payload.kind === "hire") return t("actions.hire", { name: candidateById(payload.targetId)?.name || payload.targetId, salary: money(typeof payload.value === "object" ? payload.value.offeredSalary : payload.value) });
+    if (payload.kind === "manager-pay") return L(`Set the manager’s pay to ${money(payload.value)}`, `Fixer la rémunération du gérant à ${money(payload.value)}`);
     if (payload.kind === "salary") return t("actions.salary", { name: state.staff.find((p) => p.id === payload.targetId)?.name || payload.targetId, salary: money(payload.value) });
     if (payload.kind === "schedule") return t("actions.schedule");
     if (payload.kind === "staff-allocation") return L(`Change time allocation for ${state.staff.find((p) => p.id === payload.targetId)?.name || payload.targetId}`, `Modifier l’affectation du temps de ${state.staff.find((p) => p.id === payload.targetId)?.name || payload.targetId}`);
@@ -1723,7 +2204,7 @@
         key: "resignationRisk", status: "bad", destination: { drawer: "hr" },
         title: L(`${leaver.name} is set to resign at year end`, `${leaver.name} va démissionner en fin d’année`),
         text: leaver.reason === "pay"
-          ? L(`pay below ${Math.round(RESIGN_PAY_RATIO * 100)} % of benchmark · climate ${number(forecast.social.after.staffClimate)}`, `salaire sous ${Math.round(RESIGN_PAY_RATIO * 100)} % de la référence · climat ${number(forecast.social.after.staffClimate)}`)
+          ? L(`pay below ${Math.round(D.staffModel.resignPayRatio * 100)} % of benchmark · climate ${number(forecast.social.after.staffClimate)}`, `salaire sous ${Math.round(D.staffModel.resignPayRatio * 100)} % de la référence · climat ${number(forecast.social.after.staffClimate)}`)
           : L(`climate ${number(forecast.social.after.staffClimate)}`, `climat ${number(forecast.social.after.staffClimate)}`),
         action: L("Review HR strategy", "Examiner la stratégie RH"),
         secondary: leaver.reason === "pay"
@@ -1829,7 +2310,7 @@
   }
 
   function renderHeader(planned) {
-    const limitText = state.rules.unlimited ? t("app.unlimited") : state.rules.actionLimit;
+    const limitText = Number.isFinite(actionLimit()) ? actionLimit() : t("app.unlimited");
     return `
       <header class="command-bar">
         <div class="brand-block"><strong>${escapeHtml(t("app.brand"))}</strong><span>${escapeHtml(t("app.year", { year: state.year, target: state.rules.targetYear }))}</span></div>
@@ -1852,8 +2333,9 @@
   }
 
   // Each drawer belongs to one work area; opening it moves the page behind it there.
-  const DRAWER_HOME = { relations: "team", services: "care", rooms: "care", equipment: "care", person: "team", staffAllocation: "team", staffPerson: "team", staffExit: "team", training: "team", capabilities: "team", hoursByService: "team", serviceLedger: "results", recruitment: "team", opening: "team", dropoff: "team", stock: "team", hr: "team", pricing: "business", finance: "business", market: "business", location: "business", marketing: "business", sustainability: "sustainability", plan: null, export: null, setup: null };
+  const DRAWER_HOME = { relations: "team", services: "care", rooms: "care", equipment: "care", person: "team", staffAllocation: "team", staffPerson: "team", staffExit: "team", training: "team", capabilities: "team", hoursByService: "team", serviceLedger: "results", recruitment: "team", opening: "team", dropoff: "team", stock: "team", hr: "team", pricing: "business", finance: "business", market: "business", location: "business", marketing: "business", sustainability: "sustainability", plan: null, export: null, setup: null, atelier: null };
   const AREAS = ["overview", "care", "team", "business", "sustainability", "results"];
+  const GESTION_TABS = ["annee", "annees", "parservice"];  // not "services": that name is a drawer
   // Older per-person drawers now open the person hub on the matching tab.
   const PERSON_TABS = { staffAllocation: "time", staffPerson: "pay", staffExit: "exit", training: "training" };
 
@@ -1906,12 +2388,15 @@
   // Hash routes: #area/drawer/context/detail, so Back and refresh keep the student's place.
   function parseRoute(hash) {
     const [domain, drawer, context, detail] = String(hash || "").replace(/^#/, "").split("/").map((part) => decodeURIComponent(part || ""));
-    return { domain: AREAS.includes(domain) ? domain : null, drawer: drawer && drawer in DRAWER_HOME ? drawer : null, context: context || null, detail: detail || null };
+    // Gestion's tabs ride in the drawer's place (#business/annees): a link or a reload keeps the tab.
+    const tab = domain === "business" && GESTION_TABS.includes(drawer) && !(drawer in DRAWER_HOME) ? drawer : null;
+    return { domain: AREAS.includes(domain) ? domain : null, drawer: drawer && drawer in DRAWER_HOME ? drawer : null, context: context || null, detail: detail || null, tab };
   }
 
   function routeFor() {
     const detail = ui.drawer === "person" ? ui.personTab : ui.drawer === "services" ? ui.selectedServiceId : null;
-    const parts = [state.domain, ...(ui.drawer ? [ui.drawer, ui.drawerContext || "", detail || ""] : [])];
+    const tab = state.domain === "business" && !ui.drawer && ui.gestionTab && ui.gestionTab !== "annee" ? [ui.gestionTab] : [];
+    const parts = [state.domain, ...(ui.drawer ? [ui.drawer, ui.drawerContext || "", detail || ""] : tab)];
     while (parts.length > 1 && !parts[parts.length - 1]) parts.pop();
     return `#${parts.map((part) => encodeURIComponent(part)).join("/")}`;
   }
@@ -1931,6 +2416,7 @@
 
   function applyRoute(route) {
     if (route.domain) state.domain = route.domain;
+    if (route.domain === "business" && !route.drawer) ui.gestionTab = route.tab || "annee";
     // A link and a click must land on the same screen. openDrawer folds the legacy per-person
     // drawers into the person hub; without the same fold here, the workbook's own link
     // (#team/staffAllocation/support-maya) opened a different, untabbed screen than the button did.
@@ -1952,11 +2438,12 @@
     ui.passCheck = false;
   }
 
+  const setupBannerShown = () => !state.history.length && !(state.setupLog || []).length && !state.uiPreferences.setupBannerDismissed;
   function renderStartBanner() {
     const last = state.history[state.history.length - 1];
     const lastYear = last ? `<p class="last-year">${escapeHtml(L(`Year ${state.year}. Last year: net ${money(last.financial.netResult)}, ${number(last.operational.totalHonored)} cases served.`, `Année ${state.year}. L’an dernier : résultat net ${money(last.financial.netResult)}, ${number(last.operational.totalHonored)} cas traités.`))} <button class="text-button" data-domain="results">${escapeHtml(L("See results", "Voir les résultats"))} ›</button></p>` : "";
-    const showSetup = !state.history.length && !(state.setupLog || []).length && !state.uiPreferences.setupBannerDismissed;
-    const banner = showSetup ? `<section class="setup-banner"><div><strong>${escapeHtml(L("Before you start", "Avant de commencer"))}</strong><span>${escapeHtml(L("Enter your instructor’s game settings: starting cash, forecast precision, class code, and study group.", "Saisissez les paramètres donnés par votre enseignant : trésorerie de départ, précision des prévisions, code de classe et groupe d’étude."))}</span></div><div class="button-row"><button class="button primary" data-open-drawer="setup">${escapeHtml(L("Open game setup", "Ouvrir le paramétrage"))}</button><button class="button secondary" data-dismiss-setup>${escapeHtml(L("Not needed", "Pas nécessaire"))}</button></div></section>` : "";
+    const showSetup = setupBannerShown();
+    const banner = showSetup ? `<section class="setup-banner"><div><strong>${escapeHtml(L("Before you start", "Avant de commencer"))}</strong><span>${escapeHtml(L("If your instructor gave you a rules file, load it in game setup (« Load rules from your teacher »); then enter your class code. Otherwise, enter the settings they gave you.", "Si votre enseignant vous a donné un fichier de règles, chargez-le dans le paramétrage (« Charger des règles de l’enseignant »), puis saisissez votre code de classe. Sinon, saisissez les paramètres qu’il vous a donnés."))}</span></div><div class="button-row"><button class="button primary" data-open-drawer="setup">${escapeHtml(L("Open game setup", "Ouvrir le paramétrage"))}</button><button class="button secondary" data-dismiss-setup>${escapeHtml(L("Not needed", "Pas nécessaire"))}</button></div></section>` : "";
     return lastYear + banner;
   }
 
@@ -1964,15 +2451,13 @@
   function renderPassCheck(planned, forecast) {
     if (!ui.passCheck) return "";
     const actions = pendingActions();
-    const left = actionLimit() - countedActions().length;
     const warnings = [];
     (forecast.resignations || []).forEach((item) => warnings.push(L(`${item.name} is forecast to resign at year end.`, `${item.name} devrait démissionner en fin d’année.`)));
     forecast.serviceResults.filter((row) => row.active && row.bottleneck.type === "unstaffed").forEach((row) => warnings.push(L(`${serviceName(row.id)} is open but nobody is assigned to it.`, `${serviceName(row.id)} est ouvert mais personne n’y est affecté.`)));
     (forecast.operational.facilityRows || []).filter((row) => row.full).forEach((row) => warnings.push(L(`${facilityName(row)} is full: ${number(row.turnedAway)} requests turned away.`, `${facilityName(row)} est saturé : ${number(row.turnedAway)} demandes refusées.`)));
     planned.staff.filter((person) => closedAssignments(person, planned).length).forEach((person) => warnings.push(L(`${person.name} has hours on closed services.`, `${person.name} a des heures sur des services fermés.`)));
     if (forecast.financial.treasury < state.rules.bankruptcyThreshold) warnings.push(L("The forecast treasury falls below the bankruptcy threshold.", "La trésorerie prévue passe sous le seuil de faillite."));
-    const unused = Number.isFinite(left) && left > 0 ? `<p class="no-effect">${escapeHtml(L(`${left} action${left > 1 ? "s" : ""} unused this year.`, `${left} action${left > 1 ? "s" : ""} non utilisée${left > 1 ? "s" : ""} cette année.`))}</p>` : "";
-    return `<div class="modal-backdrop"><section class="modal pass-check" role="dialog" aria-modal="true" aria-labelledby="pass-title"><div class="modal-head"><h2 id="pass-title">${escapeHtml(L(`Ready to pass Year ${state.year}?`, `Prêt à passer l’année ${state.year} ?`))}</h2><button data-cancel-pass aria-label="${escapeHtml(t("app.close"))}">×</button></div><h3>${escapeHtml(L("Planned actions", "Actions prévues"))}</h3>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(actionLabel(action.payload))}</li>`).join("")}</ul>` : `<p>${escapeHtml(L("No actions planned.", "Aucune action prévue."))}</p>`}${unused}${warnings.length ? `<h3>${escapeHtml(L("Warnings still showing", "Alertes encore visibles"))}</h3><ul class="pass-warnings">${warnings.slice(0, 6).map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : `<p class="good-text">${escapeHtml(L("No outstanding warnings.", "Aucune alerte en cours."))}</p>`}<div class="prediction-ask"><label><span>${escapeHtml(L(`After this year, what do you expect to limit the clinic in Year ${state.year + 1}?`, `Après cette année, qu’attendez-vous comme limite de la clinique en année ${state.year + 1} ?`))}</span><select data-prediction><option value="">${escapeHtml(L("Skip — no prediction", "Passer — pas de prédiction"))}</option>${predictionOptions(planned, forecast).map((option) => `<option value="${escapeHtml(option.key)}" ${ui.predictionDraft === option.key ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label><small>${escapeHtml(L("Nothing is scored. The clinic will answer at the end of that year.", "Rien n’est noté. La clinique répondra à la fin de cette année-là."))}</small></div><div class="button-row"><button class="button secondary" data-cancel-pass>${escapeHtml(L("Go back", "Retour"))}</button><button class="button primary" data-confirm-pass>${escapeHtml(L(`Pass Year ${state.year}`, `Passer l’année ${state.year}`))}</button></div></section></div>`;
+    return `<div class="modal-backdrop"><section class="modal pass-check" role="dialog" aria-modal="true" aria-labelledby="pass-title"><div class="modal-head"><h2 id="pass-title">${escapeHtml(L(`Ready to pass Year ${state.year}?`, `Prêt à passer l’année ${state.year} ?`))}</h2><button data-cancel-pass aria-label="${escapeHtml(t("app.close"))}">×</button></div><h3>${escapeHtml(L("Planned decisions", "Décisions prévues"))}</h3>${actions.length ? `<ul>${actions.map((action) => `<li>${escapeHtml(actionLabel(action.payload))}</li>`).join("")}</ul>` : `<p>${escapeHtml(L("No decisions planned.", "Aucune décision prévue."))}</p>`}${warnings.length ? `<h3>${escapeHtml(L("Warnings still showing", "Alertes encore visibles"))}</h3><ul class="pass-warnings">${warnings.slice(0, 6).map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : `<p class="good-text">${escapeHtml(L("No outstanding warnings.", "Aucune alerte en cours."))}</p>`}<div class="button-row"><button class="button secondary" data-cancel-pass>${escapeHtml(L("Go back", "Retour"))}</button><button class="button primary" data-confirm-pass>${escapeHtml(L(`Pass Year ${state.year}`, `Passer l’année ${state.year}`))}</button></div></section></div>`;
   }
 
   // One place per person: time, pay, training, and letting go.
@@ -1993,8 +2478,281 @@
     return `<div class="drawer-tabs" role="tablist">${tabs.map(([id, label]) => `<button role="tab" aria-selected="${id === tab}" class="${id === tab ? "active" : ""}" data-person-tab="${id}">${escapeHtml(label)}</button>`).join("")}</div>${body}`;
   }
 
+  // ---------- The workshop: the teacher changes the game, sees what it does, and hands it out ----------
+  const REGLES_KIND = "clinique-regles";
+  const ATELIER_SECTIONS = [
+    ["regles", { en: "Rules", fr: "Règles" }],
+    ["services", { en: "Services and prices", fr: "Services et prix" }],
+    ["equipe", { en: "Team and salaries", fr: "Équipe et salaires" }],
+    ["salles", { en: "Rooms and equipment", fr: "Salles et équipement" }],
+    ["fonctionnement", { en: "Operations", fr: "Fonctionnement" }],
+    ["depart", { en: "Starting clinic", fr: "Clinique de départ" }],
+    ["calendrier", { en: "Calendar", fr: "Calendrier" }],
+    ["monnaie", { en: "Currency", fr: "Monnaie" }],
+    ["noms", { en: "Names", fr: "Noms" }]
+  ];
+  const nameOf = (v) => (typeof v === "string" ? v : isBilingual(v) ? itemLabel(v) : "");
+  // Originals are written in data.js's currency, euros; values used, in the chosen currency.
+  function ruleText(def, v, devise) {
+    if (def.affichage === "pourcent") return `${decimal(v * 100, Math.abs(v * 100) < 1 && v !== 0 ? 2 : 1).replace(/[.,]0+$/, "")} %`;
+    if (def.affichage === "euro") return money(v, devise);
+    if (def.affichage === "fois") return `×${decimal(v, 2)}`;
+    return decimal(v, Math.abs(v) < 1 && v !== 0 ? 3 : Math.abs(v) < 10 ? 2 : 0).replace(/[.,]0+$/, "");
+  }
+  // « Consultation générale › Prix de base », « Familles qui partent après un refus ».
+  function ruleLabel(def) {
+    if (def.section === "regles") return itemLabel(def.nomL);
+    const ligne = nameOf(readRule(`${def.ligne}.name`)) || def.ligne.split(".").pop();
+    if (def.table === "acceptes") return `${nameOf(SERVICE_BY_ID[def.champ]?.name) || def.champ} › ${ligne}`;
+    return `${ligne} › ${itemLabel(def.label)}`;
+  }
+  function nameLabel(chemin) {
+    const def = RULE_NAMES[chemin];
+    const table = (D.atelierCatalogue || []).find((t) => t.id === def.table);
+    return `${itemLabel(table?.titre || { en: def.table, fr: def.table })} › ${def.texte ? L("description", "description") : L("name", "nom")}`;
+  }
+  // Every change a set of rules makes, readable: for the exports, the file and the editor.
+  function rulesSummary(rules) {
+    const clean = cleanRules(rules);
+    if (!clean) return [];
+    const out = [];
+    if (clean.comptes) out.push({ section: "regles", nom: L("Accounts", "Comptes"), texteOrigine: L("simple", "simples"), texteValeur: L("detailed Belgian", "belges détaillés") });
+    if (clean.monnaie) out.push({ section: "monnaie", nom: L("Currency", "Monnaie"), texteOrigine: "EUR", texteValeur: `${clean.monnaie.code}${Math.abs(clean.monnaie.facteur - 1) > 1e-9 ? ` (${L("amounts", "montants")} ×${decimal(clean.monnaie.facteur, 2)})` : ""}` });
+    Object.entries(clean.valeurs).forEach(([chemin, v]) => { const def = RULE_SETTINGS[chemin]; out.push({ chemin, section: def.section, nom: ruleLabel(def), origine: RULE_DEFAULTS[chemin], valeur: v, texteOrigine: ruleText(def, RULE_DEFAULTS[chemin], "EUR"), texteValeur: ruleText(def, v) }); });
+    Object.keys(clean.delies).forEach((id) => out.push({ section: "services", nom: `${nameOf(SERVICE_BY_ID[id]?.name)} › ${L("accepted price", "prix accepté")}`, texteOrigine: L("follows the base price", "suit le prix de base"), texteValeur: L("unlinked", "délié") }));
+    Object.entries(clean.noms).forEach(([chemin, v]) => out.push({ chemin, section: "noms", nom: nameLabel(chemin), texteOrigine: nameOf(NAME_DEFAULTS[chemin]), texteValeur: typeof v === "string" ? v : L(v.en, v.fr) }));
+    return out;
+  }
+  // This year and the next for the clinic as planned, under given rules (with its starting values
+  // rebuilt if no year was played) — then the game's own rules are put back.
+  function rulePreview(rules) {
+    const clinic = clone(state);
+    clinic.modelRules = rules;
+    withStartingValues(clinic);
+    applyModelRules(rules);
+    const effects = emptyEffects();
+    const actions = pendingActions();
+    actions.forEach((action) => combineEffects(effects, applyAction(clinic, action, true)));
+    const first = simulateYear(clinic, clinic, effects, actions);
+    const second = clone(clinic);
+    second.social = clone(first.next.social);
+    second.clients = first.next.clients;
+    second.reputation = first.next.reputation;
+    second.treasury = first.financial.treasury;
+    second.finance.loan = first.next.loan;
+    second.year += 1;
+    second.history = [...(clinic.history || []), { ...first, commitments: commitmentsFor(first, clinic) }];
+    const next = simulateYear(second, second, emptyEffects(), []);
+    applyModelRules(state.modelRules);
+    return { first, next };
+  }
+  function rulesEffectLines(draft) {
+    const now = rulePreview(state.modelRules), then = rulePreview(draft);
+    const rows = [
+      [L("Cases served", "Cas traités"), (r) => r.operational.totalHonored, "number"],
+      [L("Requests refused", "Demandes refusées"), (r) => r.operational.totalDemand - r.operational.totalHonored, "number"],
+      [L("Net result", "Résultat net"), (r) => r.financial.netResult, "money"],
+      [L("End treasury", "Trésorerie finale"), (r) => r.financial.treasury, "money"],
+      [L("Client trust", "Confiance des clients"), (r) => r.social.after.clientTrust, "decimal"],
+      [L("Staff climate", "Climat de l’équipe"), (r) => r.social.after.staffClimate, "decimal"]
+    ];
+    // Amounts are shown in the draft's currency, then the game's own is put back.
+    const garde = ruleCurrency;
+    ruleCurrency = cleanRules(draft)?.monnaie?.code || "EUR";
+    const fmt = (v, type) => type === "money" ? signed(Math.round(v), "money") : type === "decimal" ? `${v >= 0 ? "+" : "−"}${decimal(Math.abs(v), 1)}` : signed(Math.round(v));
+    const year = (a, b) => rows.map(([label, get, type]) => { const d = get(b) - get(a); return Math.abs(d) >= (type === "decimal" ? .05 : .5) ? [label, fmt(d, type)] : null; }).filter(Boolean);
+    const foyers = then.first.next.clients - now.first.next.clients;
+    const out = { cette: year(now.first, then.first), suivante: [...(Math.abs(foyers) >= .5 ? [[L("Client households", "Foyers clients"), signed(Math.round(foyers))]] : []), ...year(now.next, then.next)] };
+    ruleCurrency = garde;
+    return out;
+  }
+  function renderRulesSection() {
+    const summary = rulesSummary(state.modelRules);
+    const status = summary.length ? L(`Rules « ${state.modelRules.nom || "untitled"} »: ${summary.length} change${summary.length > 1 ? "s" : ""}`, `Règles « ${state.modelRules.nom || "sans nom"} » : ${summary.length} changement${summary.length > 1 ? "s" : ""}`) : L("Original rules", "Règles d’origine");
+    return `<div class="rules-setup"><h3>${escapeHtml(L("Rules of the model", "Règles du modèle"))}</h3><p><strong>${escapeHtml(status)}</strong></p>${summary.length ? `<ul class="rules-list">${summary.slice(0, 8).map((r) => `<li>${escapeHtml(r.nom)} : ${escapeHtml(r.texteOrigine)} → <strong>${escapeHtml(r.texteValeur)}</strong></li>`).join("")}${summary.length > 8 ? `<li>${escapeHtml(L(`and ${summary.length - 8} more`, `et ${summary.length - 8} autres`))}</li>` : ""}</ul>` : ""}
+      ${state.history.length ? `<p><small>${escapeHtml(L("Rules from your teacher are loaded before Year 1.", "Les règles de votre enseignant se chargent avant l’année 1."))}</small></p>` : `<label class="button secondary file-button">${escapeHtml(L("Load rules from your teacher", "Charger des règles de l’enseignant"))}<input type="file" accept="application/json,.json" data-charger-regles hidden></label>`}
+      <details class="atelier-entry"><summary>${escapeHtml(L("Teacher’s workshop", "Atelier de l’enseignant"))}</summary>${ui.atelierUnlocked ? `<button class="button primary" data-atelier-show>${escapeHtml(L("Open the workshop", "Ouvrir l’atelier"))}</button>` : `<label><span>${escapeHtml(L("Workshop code", "Code de l’atelier"))}</span><input type="password" autocomplete="off" data-atelier-code></label><button class="button secondary" data-atelier-open>${escapeHtml(L("Open", "Ouvrir"))}</button>`}</details></div>`;
+  }
+
+  // The values a field shows and takes: shares in %, everything else as is.
+  const ruleShown = (def, v) => (def.affichage === "pourcent" ? Math.round(v * 10000) / 100 : Math.round(v * 1000) / 1000);
+  const ruleTaken = (def, texte) => { const n = Number(String(texte).replace(/\s/g, "").replace(",", ".")); return Number.isFinite(n) ? (def.affichage === "pourcent" ? n / 100 : n) : null; };
+  function atelierCell(chemin) {
+    const def = RULE_SETTINGS[chemin];
+    if (!def) return "<td></td>";
+    const draft = ui.rulesDraft;
+    const v = draft.valeurs[chemin] ?? RULE_DEFAULTS[chemin];
+    const lie = def.table === "acceptes" && !(chemin in draft.valeurs) ? linkedAccepted(chemin) : null;
+    const shown = lie ?? v;
+    const modifie = Math.abs(shown - RULE_DEFAULTS[chemin]) > 1e-9;
+    return `<td class="${modifie ? "changed" : ""}"><input type="text" inputmode="decimal" value="${ruleShown(def, shown)}" data-rule-cell="${escapeHtml(chemin)}" aria-label="${escapeHtml(ruleLabel(def))}">${def.affichage === "pourcent" ? "<span class=\"unit\">%</span>" : ""}<small>${escapeHtml(L("orig.", "orig."))} ${escapeHtml(ruleText(def, RULE_DEFAULTS[chemin], "EUR"))}${lie != null && modifie ? ` · ${escapeHtml(L("follows the price", "suit le prix"))}` : ""}${chemin in draft.valeurs ? ` · <button class="text-button" data-rule-reset="${escapeHtml(chemin)}">${escapeHtml(L("reset", "rétablir"))}</button>` : ""}</small></td>`;
+  }
+  // What a linked accepted price becomes when its service's base price is changed in the draft.
+  function linkedAccepted(chemin) {
+    const m = chemin.match(/^segments\.[^.]+\.willingness\.(.+)$/);
+    const prix = `services.${m?.[1]}.price`;
+    if (!m || ui.rulesDraft.delies[m[1]] || !(prix in ui.rulesDraft.valeurs)) return null;
+    return RULE_DEFAULTS[chemin] * ui.rulesDraft.valeurs[prix] / RULE_DEFAULTS[prix];
+  }
+  function atelierTable(table) {
+    const q = (ui.atelierSearch || "").trim().toLowerCase();
+    const rows = atelierRows(table).filter((row) => !q || nameOf(row.objet.name).toLowerCase().includes(q) || row.cle.toLowerCase().includes(q));
+    if (table.matrice) {
+      const segs = rows;
+      const services = D.services.filter((s) => segs.some((seg) => `${seg.cle}.${table.matrice}.${s.id}` in RULE_SETTINGS));
+      return `<h3>${escapeHtml(itemLabel(table.titre))}</h3><p class="muted">${escapeHtml(L("Each accepted price follows its service’s base price unless you untick « linked ».", "Chaque prix accepté suit le prix de base de son service, sauf si vous décochez « lié »."))}</p><div class="atelier-scroll"><table class="atelier-table"><thead><tr><th>${escapeHtml(L("Service", "Service"))}</th>${segs.map((seg) => `<th>${escapeHtml(nameOf(seg.objet.name))}</th>`).join("")}<th>${escapeHtml(L("Linked", "Lié"))}</th></tr></thead><tbody>${services.map((s) => `<tr><th>${escapeHtml(nameOf(s.name))}</th>${segs.map((seg) => atelierCell(`${seg.cle}.${table.matrice}.${s.id}`)).join("")}<td><input type="checkbox" ${ui.rulesDraft.delies[s.id] ? "" : "checked"} data-rule-link="${s.id}" aria-label="${escapeHtml(L("Linked to the base price", "Lié au prix de base"))}"></td></tr>`).join("")}</tbody></table></div>`;
+    }
+    if (!rows.length) return "";
+    return `<h3>${escapeHtml(itemLabel(table.titre))}</h3><div class="atelier-scroll"><table class="atelier-table"><thead><tr><th></th>${table.champs.map((c) => `<th>${escapeHtml(itemLabel(c.label))}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr><th>${escapeHtml(nameOf(row.objet.name) || row.cle.split(".").pop())}${row.scenarios && row.scenarios.length < Object.keys(D.scenarios).length ? `<small>${escapeHtml(row.scenarios.map((sc) => nameOf(D.scenarios[sc].name)).join(", "))}</small>` : ""}</th>${table.champs.map((c) => atelierCell(`${row.cle}.${c.cle}`)).join("")}</tr>`).join("")}</tbody></table></div>`;
+  }
+  function atelierRules() {
+    const draft = ui.rulesDraft;
+    const groupes = [...new Set((D.atelierSettings || []).map((s) => s.groupe))];
+    const q = (ui.atelierSearch || "").trim().toLowerCase();
+    const slider = (s) => {
+      const def = RULE_SETTINGS[s.chemin];
+      const v = draft.valeurs[s.chemin] ?? RULE_DEFAULTS[s.chemin];
+      const modifie = Math.abs(v - RULE_DEFAULTS[s.chemin]) > 1e-9;
+      return `<div class="rule-row ${modifie ? "changed" : ""}"><div><strong>${escapeHtml(itemLabel(def.nomL))}</strong><small>${escapeHtml(itemLabel(def.texteL))}</small></div><div class="rule-control"><input type="range" min="${def.min}" max="${def.max}" step="${def.pas}" value="${v}" data-rule="${escapeHtml(s.chemin)}" aria-label="${escapeHtml(itemLabel(def.nomL))}"><output>${escapeHtml(ruleText(def, v))}</output><small>${escapeHtml(L("original", "origine"))} ${escapeHtml(ruleText(def, RULE_DEFAULTS[s.chemin], "EUR"))}${modifie ? ` · <button class="text-button" data-rule-reset="${escapeHtml(s.chemin)}">${escapeHtml(L("reset", "rétablir"))}</button>` : ""}</small></div></div>`;
+    };
+    const groupesEn = { Clients: "Clients", Confiance: "Trust", "Équipe": "Team", Argent: "Money", Fonctionnement: "Operations", Promesses: "Promises" };
+    const comptes = `<h3>${escapeHtml(L("Accounts", "Comptes"))}</h3><div class="rule-row ${draft.comptes ? "changed" : ""}"><div><strong>${escapeHtml(L("How the accounts are shown", "Comment les comptes se présentent"))}</strong><small>${escapeHtml(L("Simple: three kinds of cost (per case, every year, once) and three results; the students are the associates, Dr Kone a salaried vet, no owners' money. Detailed Belgian: EBE, depreciation, the reduced tax band, the manager's pay and dividends.", "Simples : trois sortes de coûts (par cas, chaque année, une fois) et trois résultats ; les étudiants sont les associés, la Dre Kone une vétérinaire salariée, pas d’argent des associés. Belges détaillés : EBE, amortissements, taux réduit d’impôt, rémunération du gérant et dividendes."))}</small></div><div class="rule-control"><select data-rule-comptes><option value="simples" ${draft.comptes ? "" : "selected"}>${escapeHtml(L("Simple", "Simples"))}</option><option value="detailles" ${draft.comptes ? "selected" : ""}>${escapeHtml(L("Detailed Belgian", "Belges détaillés"))}</option></select></div></div>`;
+    return (q ? "" : comptes) + groupes.map((g) => { const items = (D.atelierSettings || []).filter((s) => s.groupe === g && (!q || itemLabel(RULE_SETTINGS[s.chemin].nomL).toLowerCase().includes(q))); return items.length ? `<h3>${escapeHtml(L(groupesEn[g] || g, g))}</h3>${items.map(slider).join("")}` : ""; }).join("");
+  }
+  // The course calendar: start from a preset, then change sessions, years, decisions per year, what
+  // opens and the session codes. It is checked as it is edited; a calendar with errors cannot be
+  // applied or downloaded.
+  const anneesTexte = (annees) => (annees.length > 1 && annees.at(-1) - annees[0] === annees.length - 1 ? `${annees[0]}-${annees.at(-1)}` : annees.join(","));
+  function lireAnnees(texte) {
+    return [...new Set(String(texte || "").split(/[,;\s]+/).flatMap((part) => { const m = part.match(/^(\d+)\s*-\s*(\d+)$/); if (m) { const a = Number(m[1]), b = Number(m[2]); return a <= b && b - a < 12 ? Array.from({ length: b - a + 1 }, (_, k) => a + k) : []; } return part ? [Number(part)] : []; }).filter((n) => Number.isInteger(n)))];
+  }
+  function atelierCalendrier() {
+    const cal = ui.rulesDraft.calendrier;
+    const presets = Object.entries(D.calendrierPresets);
+    const choix = `<label class="atelier-field"><span>${escapeHtml(L("Start from", "Partir de"))}</span><select data-cal-preset><option value="">${escapeHtml(L("— choose —", "— choisir —"))}</option><option value="aucun">${escapeHtml(L("No calendar (everything open)", "Aucun calendrier (tout ouvert)"))}</option>${presets.map(([id, p]) => `<option value="${id}">${escapeHtml(itemLabel(p.nom))}</option>`).join("")}</select></label>`;
+    const intro = `<h3>${escapeHtml(L("Calendar", "Calendrier"))}</h3><p class="muted">${escapeHtml(L("Each session says which years are played, how many decisions each year allows, what opens, and whether a code given in class opens it. Hours can always be moved. The calendar travels in the rules file and can be replaced after Year 1.", "Chaque séance dit quelles années se jouent, combien de décisions chaque année permet, ce qui s’ouvre, et si un code donné en séance l’ouvre. Les heures se déplacent toujours. Le calendrier voyage dans le fichier de règles et peut être remplacé après l’année 1."))}</p>${choix}`;
+    if (!cal) return `${intro}<p>${escapeHtml(L("No calendar: every decision is open every year, as in the original game.", "Aucun calendrier : toutes les décisions sont ouvertes chaque année, comme dans le jeu d’origine."))}</p>`;
+    const { erreurs, notes: notesCal } = cleanCalendrier(cal);
+    // Manager's pay and dividends exist only in the detailed accounts (Règles › Comptes).
+    const notes = [...notesCal, ...(!ui.rulesDraft.comptes && cal.seances.some((s) => (s.ouvre || []).some((f) => f === "remuneration" || f === "dividendes")) ? [L("Manager's pay and dividends open only with detailed Belgian accounts (Rules › Accounts).", "La rémunération du gérant et les dividendes ne s’ouvrent qu’avec les comptes belges détaillés (Règles › Comptes).")] : [])];
+    const ouvertesAvant = (i) => new Set(cal.seances.slice(0, i).flatMap((s) => s.ouvre || []));
+    const ligne = (s, i) => {
+      const annees = lireAnnees(anneesTexte(s.annees || []));
+      const avant = ouvertesAvant(i);
+      const parAnnee = annees.map((n) => `<span class="cal-year"><b>${escapeHtml(L(`Y${n}`, `A${n}`))}</b><select data-cal-type="${i}:${n}" aria-label="${escapeHtml(L(`Year ${n} kind`, `Type de l’année ${n}`))}"><option value="libre">${escapeHtml(L("free", "libre"))}</option><option value="guidee" ${s.types?.[n] === "guidee" ? "selected" : ""}>${escapeHtml(L("guided", "guidée"))}</option></select><input type="number" min="0" max="12" value="${s.quotas?.[n] ?? ""}" placeholder="∞" data-cal-quota="${i}:${n}" aria-label="${escapeHtml(L(`Decisions in Year ${n}`, `Décisions en année ${n}`))}"></span>`).join("");
+      const familles = Object.entries(D.calendrierFamilles).map(([id, f]) => avant.has(id)
+        ? `<label class="cal-family done"><input type="checkbox" checked disabled> ${escapeHtml(itemLabel(f.nom))}</label>`
+        : `<label class="cal-family"><input type="checkbox" data-cal-famille="${i}:${id}" ${(s.ouvre || []).includes(id) ? "checked" : ""}> ${escapeHtml(itemLabel(f.nom))}</label>`).join("");
+      const montre = ui.calCodesMontres?.[i];
+      const code = s.code
+        ? `${montre ? `<strong class="cal-code">${escapeHtml(montre)}</strong><small>${escapeHtml(L("Write it down now: it is not shown again.", "Notez-le maintenant : il ne sera plus affiché."))}</small>` : `<span>✓ ${escapeHtml(L("code set", "code défini"))}</span>`}<button class="text-button" data-cal-sanscode="${i}">${escapeHtml(L("remove", "retirer"))}</button>`
+        : `<button class="text-button" data-cal-code="${i}">${escapeHtml(L("Generate a code", "Générer un code"))}</button>`;
+      return `<tr><td><input type="text" maxlength="40" value="${escapeHtml(nomSeance(s))}" data-cal-nom="${i}" aria-label="${escapeHtml(L("Session name", "Nom de la séance"))}"><button class="text-button" data-cal-retirer="${i}">${escapeHtml(L("delete", "supprimer"))}</button></td><td><input type="text" class="cal-years-input" value="${escapeHtml(anneesTexte(s.annees || []))}" data-cal-annees="${i}" aria-label="${escapeHtml(L("Years", "Années"))}"></td><td>${parAnnee}</td><td class="cal-families">${familles}</td><td>${code}</td></tr>`;
+    };
+    const verdict = erreurs.length
+      ? `<div class="cal-check bad" role="alert"><strong>${escapeHtml(L("To fix before applying", "À corriger avant d’appliquer"))}</strong><ul>${erreurs.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul></div>`
+      : `<div class="cal-check good"><strong>✓ ${escapeHtml(L("The calendar holds together.", "Le calendrier tient."))}</strong>${notes.length ? `<ul>${notes.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>` : ""}</div>`;
+    return `${intro}<label class="atelier-field"><span>${escapeHtml(L("Calendar name", "Nom du calendrier"))}</span><input type="text" maxlength="40" value="${escapeHtml(nomSeance(cal))}" data-cal-titre></label>${verdict}
+      <div class="atelier-scroll"><table class="atelier-table cal-table"><thead><tr><th>${escapeHtml(L("Session", "Séance"))}</th><th>${escapeHtml(L("Years", "Années"))}</th><th>${escapeHtml(L("Each year: kind · decisions (empty = no limit)", "Chaque année : type · décisions (vide = sans limite)"))}</th><th>${escapeHtml(L("Opens (adds to earlier sessions)", "S’ouvre (s’ajoute aux séances précédentes)"))}</th><th>${escapeHtml(L("Code", "Code"))}</th></tr></thead><tbody>${cal.seances.map(ligne).join("")}</tbody></table></div>
+      <button class="button secondary" data-cal-ajouter>${escapeHtml(L("Add a session", "Ajouter une séance"))}</button>`;
+  }
+  // A code students can read aloud and type: a word and two digits.
+  function nouveauCodeSeance() {
+    const mots = ["LOUPE", "SCALPEL", "STETHO", "SUTURE", "VACCIN", "PLATRE", "SERINGUE", "GAZE", "PINCE", "OTOSCOPE"];
+    const n = (k) => Math.floor(Math.random() * k);
+    return `${mots[n(mots.length)]}-${String(10 + n(90))}`;
+  }
+  function atelierCurrency() {
+    const draft = ui.rulesDraft;
+    const code = draft.monnaie?.code || "EUR";
+    const facteur = draft.monnaie?.facteur ?? 1;
+    const consult = RULE_DEFAULTS["services.consult.price"];
+    const apercu = (() => { const garde = ruleCurrency; ruleCurrency = code; const t = money(Math.round(consult * facteur)); ruleCurrency = garde; return t; })();
+    return `<h3>${escapeHtml(L("Currency", "Monnaie"))}</h3><label class="atelier-field"><span>${escapeHtml(L("Currency shown in the game", "Monnaie affichée dans le jeu"))}</span><select data-rule-currency>${RULE_CURRENCIES.map((c) => `<option value="${c}" ${c === code ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+      <label class="atelier-field"><span>${escapeHtml(L("Convert every amount by", "Convertir tous les montants par"))}</span><input type="text" inputmode="decimal" value="${facteur}" data-rule-factor></label>
+      <p>${escapeHtml(L(`Example: the consultation, ${money(consult)} today, would be ${apercu}.`, `Exemple : la consultation, ${money(consult)} aujourd’hui, passerait à ${apercu}.`))}</p>
+      <button class="button primary" data-rule-convert>${escapeHtml(L("Convert all amounts", "Convertir tous les montants"))}</button>
+      <p class="muted">${escapeHtml(L("Converting sets every amount (prices, salaries, rents, equipment, costs, treasury) to its original × the factor. You can then adjust each one in its section.", "Convertir remplace chaque montant (prix, salaires, loyers, équipements, coûts, trésorerie) par son original × le facteur. Vous pouvez ensuite ajuster chacun dans sa section."))}</p>`;
+  }
+  function atelierNames() {
+    const q = (ui.atelierSearch || "").trim().toLowerCase();
+    const rows = Object.keys(RULE_NAMES).filter((c) => !q || nameOf(NAME_DEFAULTS[c]).toLowerCase().includes(q));
+    const draftName = (c) => ui.rulesDraft.noms[c] ?? NAME_DEFAULTS[c];
+    return `<h3>${escapeHtml(L("Names", "Noms"))}</h3><p class="muted">${escapeHtml(L("The workbook and the model map use the original names.", "Le carnet et la carte du modèle utilisent les noms d’origine."))}</p><div class="atelier-scroll"><table class="atelier-table names"><thead><tr><th></th><th>Français</th><th>English</th></tr></thead><tbody>${rows.map((c) => { const o = NAME_DEFAULTS[c], d = draftName(c); const changed = JSON.stringify(o) !== JSON.stringify(d); return `<tr class="${changed ? "changed" : ""}"><th><small>${escapeHtml(nameLabel(c))}</small>${escapeHtml(nameOf(o))}</th>${typeof o === "string" ? `<td colspan="2"><input type="text" maxlength="120" value="${escapeHtml(typeof d === "string" ? d : d.fr)}" data-name-single="${escapeHtml(c)}"></td>` : `<td data-langue="Français"><input type="text" maxlength="120" value="${escapeHtml(d.fr)}" data-name-fr="${escapeHtml(c)}" aria-label="${escapeHtml(nameOf(o))} · Français"></td><td data-langue="English"><input type="text" maxlength="120" value="${escapeHtml(d.en)}" data-name-en="${escapeHtml(c)}" aria-label="${escapeHtml(nameOf(o))} · English"></td>`}</tr>`; }).join("")}</tbody></table></div>`;
+  }
+  function renderAtelierPage() {
+    if (!ui.rulesDraft) { const c = cleanRules(state.modelRules); ui.rulesDraft = { nom: c?.nom || "", valeurs: { ...(c?.valeurs || {}) }, noms: { ...(c?.noms || {}) }, delies: { ...(c?.delies || {}) }, monnaie: c?.monnaie ? { ...c.monnaie } : null, comptes: c?.comptes || null, calendrier: state.calendrier ? clone(state.calendrier) : null }; }
+    const draft = ui.rulesDraft;
+    const section = ui.atelierSection || "regles";
+    const changes = rulesSummary(draft);
+    const parSection = (id) => changes.filter((r) => r.section === id).length;
+    const effets = rulesEffectLines(draft);
+    const ligne = (titre, items) => `<div class="effect-year"><h4>${escapeHtml(titre)}</h4>${items.length ? `<ul>${items.map(([label, v]) => `<li><span>${escapeHtml(label)}</span><strong>${escapeHtml(v)}</strong></li>`).join("")}</ul>` : `<p class="muted">${escapeHtml(L("nothing moves on your clinic as it is", "rien ne bouge sur votre clinique telle qu’elle est"))}</p>`}</div>`;
+    const contenu = section === "regles" ? atelierRules()
+      : section === "monnaie" ? atelierCurrency()
+      : section === "noms" ? atelierNames()
+      : section === "calendrier" ? atelierCalendrier()
+      : (D.atelierCatalogue || []).filter((t) => t.section === section).map(atelierTable).join("");
+    return `<div class="atelier-page">
+      <header class="atelier-top"><div><h1>${escapeHtml(L("Teacher’s workshop", "Atelier de l’enseignant"))}</h1><span>${escapeHtml(L(`${changes.length} change${changes.length === 1 ? "" : "s"}`, `${changes.length} changement${changes.length > 1 ? "s" : ""}`))}</span></div>
+        <label class="rules-name"><span>${escapeHtml(L("Name of these rules", "Nom de ces règles"))}</span><input type="text" maxlength="60" value="${escapeHtml(draft.nom || "")}" data-rule-name placeholder="${escapeHtml(L("e.g. Clinic in Geneva", "ex. Clinique à Genève"))}"></label>
+        <div class="language-switch"><button data-language="fr" class="${state.language === "fr" ? "active" : ""}" aria-pressed="${state.language === "fr"}">FR</button><button data-language="en" class="${state.language === "en" ? "active" : ""}" aria-pressed="${state.language === "en"}">EN</button></div>
+        <div class="button-row"><button class="button primary" data-rules-apply>${escapeHtml(L("Apply to my game", "Appliquer à ma partie"))}</button><button class="button secondary" data-rules-download ${changes.length || draft.calendrier ? "" : "disabled"}>${escapeHtml(L("Download for students", "Télécharger pour les étudiants"))}</button><button class="button secondary" data-rules-reset-all>${escapeHtml(L("Original rules", "Règles d’origine"))}</button><button class="button secondary" data-atelier-close>${escapeHtml(L("Close", "Fermer"))}</button></div></header>
+      <div class="atelier-cols">
+        <nav class="atelier-nav" aria-label="${escapeHtml(L("Sections", "Sections"))}">${ATELIER_SECTIONS.map(([id, label]) => `<button data-atelier-section="${id}" class="${id === section ? "active" : ""}">${escapeHtml(itemLabel(label))}${parSection(id) ? `<span class="badge">${parSection(id)}</span>` : ""}</button>`).join("")}</nav>
+        <main class="atelier-main">${["monnaie", "calendrier"].includes(section) ? "" : `<input type="search" class="atelier-search" value="${escapeHtml(ui.atelierSearch || "")}" placeholder="${escapeHtml(L("Search…", "Chercher…"))}" data-atelier-search>`}${state.history.length && ["services", "equipe", "depart"].includes(section) ? `<p class="callout">${escapeHtml(L("Your game has started: starting values (prices, salaries, treasury, households) apply to a game not yet started — such as your students’.", "Votre partie a commencé : les valeurs de départ (prix, salaires, trésorerie, foyers) s’appliquent à une partie pas encore commencée — comme celle de vos étudiants."))}</p>` : ""}${contenu}</main>
+        <aside class="atelier-effect" aria-live="polite"><h2>${escapeHtml(L("What these rules change on your clinic", "Ce que ces règles changent sur votre clinique"))}</h2>${changes.length || cleanRules(state.modelRules) ? `${ligne(L("This year", "Cette année"), effets.cette)}${ligne(L("Next year", "L’an prochain"), effets.suivante)}` : `<p class="muted">${escapeHtml(L("Original rules: change something to see its effect.", "Règles d’origine : changez quelque chose pour voir son effet."))}</p>`}<p class="muted">${escapeHtml(L("Compared with the rules your game uses now, as planned. The workbook’s figures assume the original rules.", "Comparé aux règles de votre partie, telle que planifiée. Les chiffres du carnet supposent les règles d’origine."))}</p></aside>
+      </div></div>`;
+  }
+  function telechargerRegles() {
+    const clean = cleanRules(ui.rulesDraft);
+    const cal = cleanCalendrier(ui.rulesDraft?.calendrier);
+    if (ui.rulesDraft?.calendrier && !cal.calendrier) { ui.atelierSection = "calendrier"; render(); toast(L("The calendar has errors: fix them first.", "Le calendrier a des erreurs : corrigez-les d’abord."), "warn"); return; }
+    if (!clean && !cal.calendrier) return;
+    const fichier = { kind: REGLES_KIND, ...(clean || { nom: ui.rulesDraft?.nom || "", version: 2, valeurs: {}, noms: {}, delies: {}, monnaie: null }), ...(cal.calendrier ? { calendrier: cal.calendrier } : {}), changements: rulesSummary(clean).map(({ section, nom, texteOrigine, texteValeur }) => ({ section, nom, origine: texteOrigine, valeur: texteValeur })) };
+    const blob = new Blob([JSON.stringify(fichier, null, 1)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `regles-${((clean || ui.rulesDraft)?.nom || "clinique").normalize("NFD").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "clinique"}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast(L("Rules downloaded: give this file to the students, who load it in the game setup.", "Règles téléchargées : donnez ce fichier aux étudiants, qui le chargent dans le paramétrage."), "good");
+  }
+  function appliquerRegles(rules, source) {
+    let clean = cleanRules(rules);
+    // The way the accounts are kept is a starting value: after Year 1 the game keeps its own.
+    if ((state.history || []).length && (clean?.comptes || null) !== (state.modelRules?.comptes || null)) {
+      clean = cleanRules({ ...(clean || {}), comptes: state.modelRules?.comptes || null });
+    }
+    state.modelRules = clean;
+    appliquerComptes(state);
+    withStartingValues(state);
+    logDecision("rules", `rules:${source}`, clean ? `${clean.nom || ""} (${rulesSummary(clean).length})` : "origine");
+    saveState();
+    return clean;
+  }
+  function chargerRegles(texte) {
+    let fichier;
+    try { fichier = JSON.parse(texte); } catch (e) { toast(L("That file is not readable.", "Ce fichier n’est pas lisible."), "warn"); return false; }
+    if (!fichier || fichier.kind !== REGLES_KIND) { toast(L("That is not a rules file from the workshop.", "Ce n’est pas un fichier de règles de l’atelier."), "warn"); return false; }
+    if (fichier.calendrier) {
+      const cal = appliquerCalendrier(fichier.calendrier, "load");
+      if (!cal.ok) { toast(L(`The calendar in this file is not valid: ${cal.erreurs[0]}`, `Le calendrier de ce fichier n’est pas valable : ${cal.erreurs[0]}`), "warn"); return false; }
+    }
+    if (state.history.length) {
+      // After Year 1 only a calendar can change: a session moved, a day cancelled.
+      if (fichier.calendrier) { saveState(); render(); toast(L("Calendar updated. The other rules stay as they were.", "Calendrier mis à jour. Les autres règles restent les mêmes."), "good"); return true; }
+      toast(L("Rules are loaded before Year 1.", "Les règles se chargent avant l’année 1."), "warn"); return false;
+    }
+    const clean = appliquerRegles(fichier, "load");
+    render();
+    toast(clean ? L(`Rules « ${clean.nom} » loaded: ${rulesSummary(clean).length} changes.`, `Règles « ${clean.nom} » chargées : ${rulesSummary(clean).length} changements.`) : L("Original rules.", "Règles d’origine."), "good");
+    return true;
+  }
+
   function renderSetupDrawer() {
-    if (!ui.settingsDraft) ui.settingsDraft = { actionLimit: state.rules.unlimited ? "unlimited" : String(state.rules.actionLimit), targetYear: state.rules.targetYear, bankruptcyThreshold: state.rules.bankruptcyThreshold, startingTreasury: state.setup.startingTreasury, forecastPrecision: state.setup.forecastPrecision, classCode: state.setup.classCode, studyGroup: state.setup.studyGroup };
+    if (!ui.settingsDraft) ui.settingsDraft = { expansionFrom: String(state.rules.expansionFrom || 1), actionLimit: state.rules.unlimited ? "unlimited" : String(state.rules.actionLimit), targetYear: state.rules.targetYear, bankruptcyThreshold: state.rules.bankruptcyThreshold, startingTreasury: state.setup.startingTreasury, forecastPrecision: state.setup.forecastPrecision, classCode: state.setup.classCode, studyGroup: state.setup.studyGroup };
     const settings = ui.settingsDraft;
     return `<p class="setup-note">${escapeHtml(L("Enter the values your instructor gives you before starting Year 1. Every setting and cash adjustment is recorded in the report.", "Saisissez les valeurs données par votre enseignant avant de commencer l’année 1. Chaque paramètre et ajustement de trésorerie figure dans le rapport."))}</p><div class="form-stack"><fieldset><legend>${escapeHtml(L("Given to you by your instructor", "Donné par votre enseignant"))}</legend><div class="setup-fields">
         <label><span>${escapeHtml(L("Starting treasury", "Trésorerie de départ"))}</span><input type="number" min="0" max="2000000" step="5000" value="${settings.startingTreasury}" data-settings-field="startingTreasury" ${state.history.length ? "disabled" : ""}>${state.history.length ? `<small>${escapeHtml(L("Locked after Year 1", "Verrouillée après l’année 1"))}</small>` : ""}</label>
@@ -2004,8 +2762,9 @@
       </div></fieldset><fieldset><legend>${escapeHtml(L("Rules of play", "Règles du jeu"))}</legend><div class="setup-fields">
         <label><span>${escapeHtml(t("app.actionLimit"))}</span><select data-settings-field="actionLimit">${Array.from({ length: 12 }, (_, index) => index + 1).map((count) => `<option value="${count}" ${String(settings.actionLimit) === String(count) ? "selected" : ""}>${count} ${escapeHtml(count === 1 ? L("action", "action") : L("actions", "actions"))}</option>`).join("")}<option value="unlimited" ${settings.actionLimit === "unlimited" ? "selected" : ""}>${escapeHtml(t("app.unlimited"))}</option></select></label>
         <label><span>${escapeHtml(t("app.targetYear"))}</span><input type="number" min="${state.year}" max="12" value="${settings.targetYear}" data-settings-field="targetYear"></label>
+        <label><span>${escapeHtml(L("Expansion allowed from", "Agrandissements permis à partir de"))}</span><select data-settings-field="expansionFrom">${Array.from({ length: 12 }, (_, index) => index + 1).map((y) => `<option value="${y}" ${String(settings.expansionFrom) === String(y) ? "selected" : ""}>${escapeHtml(y === 1 ? L("Year 1 (no rule)", "Année 1 (pas de règle)") : L(`Year ${y}`, `Année ${y}`))}</option>`).join("")}</select><small>${escapeHtml(L("Hiring, new rooms, equipment, the loan, moving.", "Embauche, nouvelles salles, équipement, emprunt, déménagement."))}</small></label>
         <label><span>${escapeHtml(t("app.bankruptcy"))}</span><input type="number" min="-1000000" max="0" step="10000" value="${settings.bankruptcyThreshold}" data-settings-field="bankruptcyThreshold"></label>
-      </div></fieldset></div><div class="setup-actions"><button class="button primary" data-save-settings>${escapeHtml(L("Save settings", "Enregistrer les paramètres"))}</button></div>${ui.settingsError ? `<p class="form-error" role="alert">${escapeHtml(ui.settingsError)}</p>` : ""}${renderCashAdjuster()}<h3>${escapeHtml(L("Scenario", "Scénario"))}</h3><div class="scenario-grid compact">${Object.entries(D.scenarios).map(([id, scenario]) => `<article class="choice-card ${state.scenarioId === id ? "selected" : ""}"><h3>${escapeHtml(itemLabel(scenario.name))}</h3><p>${escapeHtml(itemLabel(scenario.description))}</p><button class="button ${state.scenarioId === id ? "secondary" : "danger"}" data-scenario="${id}" ${state.scenarioId === id ? "disabled" : ""}>${escapeHtml(state.scenarioId === id ? t("common.current") : t("dashboard.chooseScenario"))}</button></article>`).join("")}</div><div class="button-row"><button class="button secondary" data-export>${escapeHtml(t("app.export"))}</button><button class="button danger" data-reset>${escapeHtml(t("app.reset"))}</button></div>`;
+      </div></fieldset></div><div class="setup-actions"><button class="button primary" data-save-settings>${escapeHtml(L("Save settings", "Enregistrer les paramètres"))}</button></div>${ui.settingsError ? `<p class="form-error" role="alert">${escapeHtml(ui.settingsError)}</p>` : ""}${renderRulesSection()}${renderCashAdjuster()}<h3>${escapeHtml(L("Scenario", "Scénario"))}</h3><div class="scenario-grid compact">${Object.entries(D.scenarios).map(([id, scenario]) => `<article class="choice-card ${state.scenarioId === id ? "selected" : ""}"><h3>${escapeHtml(itemLabel(scenario.name))}</h3><p>${escapeHtml(itemLabel(scenario.description))}</p><button class="button ${state.scenarioId === id ? "secondary" : "danger"}" data-scenario="${id}" ${state.scenarioId === id ? "disabled" : ""}>${escapeHtml(state.scenarioId === id ? t("common.current") : t("dashboard.chooseScenario"))}</button></article>`).join("")}</div><div class="button-row"><button class="button secondary" data-export>${escapeHtml(t("app.export"))}</button><button class="button danger" data-reset>${escapeHtml(t("app.reset"))}</button></div>`;
   }
 
   function serviceChip(row) {
@@ -2126,7 +2885,7 @@
   function renderPlanPanel(baseline, forecast) {
     const rows = planRows(baseline, forecast);
     return `<aside class="plan-panel" aria-label="${escapeHtml(t("forecast.title"))}">
-      <button class="mobile-plan-toggle" data-open-drawer="plan"><strong>${escapeHtml(L("Plan", "Plan"))} · ${pendingActions().length} ${escapeHtml(pendingActions().length === 1 ? t("common.action") : t("common.actions"))}</strong><span>${escapeHtml(t("forecast.treasury"))} ${escapeHtml(forecastText(forecast.financial.treasury, "money"))} <em>(${escapeHtml(forecastText(forecast.financial.treasury - baseline.financial.treasury, "money", { signed: true }))})</em></span></button>
+      <button class="mobile-plan-toggle" data-open-drawer="plan"><strong>${escapeHtml(L("Plan", "Plan"))} · ${pendingActions().length} ${escapeHtml(pendingActions().length === 1 ? L("decision", "décision") : L("decisions", "décisions"))}</strong><span>${escapeHtml(t("forecast.treasury"))} ${escapeHtml(forecastText(forecast.financial.treasury, "money"))} <em>(${escapeHtml(forecastText(forecast.financial.treasury - baseline.financial.treasury, "money", { signed: true }))})</em></span></button>
       <div class="panel-heading"><div><h2>${escapeHtml(t("forecast.title"))}</h2><details class="note-repliee" data-pli="noteOpen" ${ui.noteOpen ? "open" : ""}><summary>${escapeHtml(L("How to read this", "Comment lire ceci"))}</summary><p>${escapeHtml(forecastNote())}</p></details></div></div>
       <div class="forecast-table">
         <div class="forecast-head"><span></span><span>${escapeHtml(t("common.baseline"))}</span><span>${escapeHtml(t("common.planned"))}</span><span>${escapeHtml(t("common.delta"))}</span></div>
@@ -2202,10 +2961,13 @@
     return [
       [L("Starting treasury", "Trésorerie de départ"), money(setup.startingTreasury)],
       [L("Forecast precision", "Précision des prévisions"), precisionLabel(setup.forecastPrecision)],
+      [L("Rules of the model", "Règles du modèle"), (() => { const r = rulesSummary(state.modelRules); return r.length ? `« ${state.modelRules.nom || L("untitled", "sans nom")} » — ${r.map((x) => `${x.nom} : ${x.texteOrigine} → ${x.texteValeur}`).join(" ; ")}` : L("original", "d’origine"); })()],
       [L("Class code", "Code de classe"), setup.classCode || L("Default", "Par défaut")],
       [L("Study group", "Groupe d’étude"), setup.studyGroup || L("Not set", "Non défini")],
       [L("Action limit", "Limite d’actions"), state.rules.unlimited ? L("Unlimited", "Illimitée") : String(state.rules.actionLimit)],
       [L("Target year", "Année cible"), String(state.rules.targetYear)],
+      [L("Course calendar", "Calendrier du cours"), state.calendrier ? `${nomSeance(state.calendrier)} — ${state.calendrier.seances.map((x) => `${nomSeance(x)} (${anneesTexte(x.annees)})`).join(", ")}` : L("None", "Aucun")],
+      [L("Expansion allowed from", "Agrandissements permis à partir de"), (state.rules.expansionFrom || 1) > 1 ? L(`Year ${state.rules.expansionFrom}`, `Année ${state.rules.expansionFrom}`) : L("Year 1 (no rule)", "Année 1 (pas de règle)")],
       [L("Bankruptcy threshold", "Seuil de faillite"), money(state.rules.bankruptcyThreshold)]
     ];
   }
@@ -2233,11 +2995,11 @@
     const person = planned.staff.find((item) => item.id === ui.drawerContext);
     if (!person) return `<p>${escapeHtml(L("This person is no longer on the planned team.", "Cette personne ne fait plus partie de l’équipe planifiée."))}</p>`;
     const row = forecast.operational.staffRows.find((item) => item.id === person.id);
-    const severance = person.salary * SEVERANCE_SHARE;
+    const severance = person.salary * D.staffModel.severanceShare;
     const services = normalizeAllocations(person).filter((item) => item.share > 0).map((item) => serviceName(item.serviceId)).join(", ");
     const key = `fire:${person.id}`;
     const payload = { kind: "fire", targetId: person.id };
-    return `<div class="staff-editor"><h3>${escapeHtml(person.name)}</h3><p>${escapeHtml(L(`Letting ${person.name} go costs ${money(severance)} in severance (3 months’ salary), removes their ${number(row?.availableHours || 0)} available hours this year, and lowers the team’s climate by ${Math.abs(DEPARTURE_CLIMATE)}. Their annual salary of ${money(person.salary)} stops.`, `Se séparer de ${person.name} coûte ${money(severance)} d’indemnité (3 mois de salaire), retire ses ${number(row?.availableHours || 0)} heures disponibles cette année et baisse le climat de l’équipe de ${Math.abs(DEPARTURE_CLIMATE)}. Son salaire annuel de ${money(person.salary)} s’arrête.`))}</p><p><strong>${escapeHtml(L("Services they work on", "Services concernés"))}:</strong> ${escapeHtml(services || "—")}</p><p class="no-effect">${escapeHtml(L("Services left without anyone show as “Nobody assigned”. A former applicant cannot be rehired for a year.", "Les services laissés sans personne apparaissent « Personne d’affecté ». Un ancien candidat ne peut pas être réembauché pendant un an."))}</p>${consequencePreview(key, payload)}${reviewButton(key, payload, L("Let go", "Se séparer"))}</div>`;
+    return `<div class="staff-editor"><h3>${escapeHtml(person.name)}</h3><p>${escapeHtml(L(`Letting ${person.name} go costs ${money(severance)} in severance (3 months’ salary), removes their ${number(row?.availableHours || 0)} available hours this year, and lowers the team’s climate by ${Math.abs(D.staffModel.departureClimate)}. Their annual salary of ${money(person.salary)} stops.`, `Se séparer de ${person.name} coûte ${money(severance)} d’indemnité (3 mois de salaire), retire ses ${number(row?.availableHours || 0)} heures disponibles cette année et baisse le climat de l’équipe de ${Math.abs(D.staffModel.departureClimate)}. Son salaire annuel de ${money(person.salary)} s’arrête.`))}</p><p><strong>${escapeHtml(L("Services they work on", "Services concernés"))}:</strong> ${escapeHtml(services || "—")}</p><p class="no-effect">${escapeHtml(L("Services left without anyone show as “Nobody assigned”. A former applicant cannot be rehired for a year.", "Les services laissés sans personne apparaissent « Personne d’affecté ». Un ancien candidat ne peut pas être réembauché pendant un an."))}</p>${consequencePreview(key, payload)}${reviewButton(key, payload, L("Let go", "Se séparer"))}</div>`;
   }
 
   function previewAction(key, payload) {
@@ -2258,18 +3020,34 @@
       variable: f.variableCosts,
       payroll: f.payroll,
       charges: f.socialCharges,
+      gerant: f.gerant || 0,
       overtime: f.overtimeCost,
+      amortissements: f.amortissements || 0,
       facilities: f.facilityCosts,
       admin: f.admin,
-      operating: f.openingCosts + f.dropoffCost + f.stockCost + f.hrCost + f.marketingCost + f.sustainabilityCost + f.loanInterest
+      operating: f.openingCosts + f.dropoffCost + f.stockCost + f.hrCost + f.marketingCost + f.sustainabilityCost + f.loanInterest,
+      // The statement's own families (simple accounts).
+      personnel: f.payroll + f.socialCharges + f.overtimeCost,
+      autres: f.admin + f.openingCosts + f.dropoffCost + f.stockCost + f.hrCost + f.marketingCost + f.sustainabilityCost,
+      interets: f.loanInterest || 0
     };
   }
+  // Simple accounts: the preview names costs exactly as the statement does.
+  const COST_LINES_SIMPLES = [
+    ["variable", () => L("Variable costs", "Coûts variables")],
+    ["personnel", () => L("Staff (salaries, charges, overtime)", "Personnel (salaires, charges, heures sup.)")],
+    ["facilities", () => L("Premises and equipment", "Locaux et équipement")],
+    ["autres", () => L("Other yearly costs", "Autres frais de l’année")],
+    ["interets", () => L("Interest", "Intérêts")]
+  ];
 
   const COST_LINES = [
     ["variable", () => L("Variable costs", "Coûts variables")],
     ["payroll", () => L("Salaries", "Salaires")],
     ["charges", () => L("Employer charges", "Charges sociales")],
+    ["gerant", () => L("Manager’s pay and contributions", "Rémunération du gérant et cotisations")],
     ["overtime", () => L("Overtime", "Heures supplémentaires")],
+    ["amortissements", () => L("Depreciation", "Amortissements")],
     ["facilities", () => L("Facilities", "Installations")],
     ["admin", () => L("Administration", "Frais d’administration")],
     ["operating", () => L("Operating costs", "Coûts d’exploitation")]
@@ -2297,11 +3075,15 @@
     const cells = [];
     // Costs, by the line they land on, with the second year when it differs.
     const once = after.financial.oneTimeCosts - before.financial.oneTimeCosts;
+    const invest = (after.financial.investissements || 0) - (before.financial.investissements || 0);
     const firstYear = costBuckets(after), baseYear = costBuckets(before);
     const settled = settledAfter ? costBuckets(settledAfter) : null;
     const settledBase = settledBefore ? costBuckets(settledBefore) : null;
-    if (Math.abs(once) >= 1) cells.push([L("One-time costs", "Coûts ponctuels"), signed(once, "money"), "", "cost"]);
-    COST_LINES.forEach(([id, label]) => {
+    if (comptesDetailles()) {
+      if (Math.abs(invest) >= 1) cells.push([L("Investment, paid once", "Investissement, payé une fois"), signed(invest, "money"), L("in the result: depreciation each year", "dans le résultat : l’amortissement de chaque année"), "cost"]);
+      if (Math.abs(once) >= 1) cells.push([L("One-time costs", "Coûts ponctuels"), signed(once, "money"), "", "cost"]);
+    } else if (Math.abs(invest + once) >= 1) cells.push([L("Paid once", "Dépenses ponctuelles"), signed(invest + once, "money"), L("in this year's result, in full", "dans le résultat de cette année, en entier"), "cost"]);
+    (comptesDetailles() ? COST_LINES : COST_LINES_SIMPLES).forEach(([id, label]) => {
       const now = firstYear[id] - baseYear[id];
       const later = settled ? settled[id] - settledBase[id] : now;
       if (Math.abs(now) < 1 && Math.abs(later) < 1) return;
@@ -2323,8 +3105,11 @@
       // Requests = cases + refusals, so one of the three is always redundant. Cases always; refusals
       // only when demand itself moves — otherwise they are just the mirror of the cases (owner,
       // 2026-10-19). The requests line, their sum, is not shown.
-      outcome(L("Cases served", "Cas traités"), before.operational.totalHonored, after.operational.totalHonored, "number", .5);
-      if (Math.abs(after.operational.totalDemand - before.operational.totalDemand) >= .5) outcome(L("Requests refused", "Demandes refusées"), refused(before), refused(after), "number", .5, refused(after) > refused(before) ? refusedCause() : "");
+      // When demand moves, the cases line shows even at zero: a price rise on a service held back by
+      // its hours moves the refusals and not the cases — nor the supplies (owner, 2026-11-06).
+      const demandeBouge = Math.abs(after.operational.totalDemand - before.operational.totalDemand) >= .5;
+      outcome(L("Cases served", "Cas traités"), before.operational.totalHonored, after.operational.totalHonored, "number", demandeBouge ? 0 : .5);
+      if (demandeBouge) outcome(L("Requests refused", "Demandes refusées"), refused(before), refused(after), "number", .5, refused(after) > refused(before) ? refusedCause() : "");
       outcome(L("Households next year", "Foyers l’an prochain"), before.next.clients, after.next.clients, "number", .5);
       if (direct.has("carbon")) outcome(L("Carbon footprint", "Empreinte carbone"), before.carbon.total, after.carbon.total, "carbon", .05);
       if (direct.has("staffClimate")) outcome(L("Staff climate", "Climat de l’équipe"), before.social.after.staffClimate, after.social.after.staffClimate, "number", .5);
@@ -2351,8 +3136,9 @@
   function compareOptions(options) {
     const runs = options.map((o) => ({ ...o, ...previewAction(o.key, o.payload) }));
     const d = (r, get) => get(r.after) - get(r.before);
-    const recurring = (run) => run.financial.totalCosts - run.financial.oneTimeCosts;
+    const recurring = (run) => run.financial.totalCosts - (run.financial.depensesPonctuelles ?? run.financial.oneTimeCosts) - (run.financial.valeurSortie || 0);
     const rows = [
+      [L("Investment, paid once", "Investissement, payé une fois"), (r) => d(r, (x) => x.financial.investissements || 0), "money", false],
       [L("One-time costs", "Coûts ponctuels"), (r) => d(r, (x) => x.financial.oneTimeCosts), "money", false],
       [L("Recurring costs", "Coûts récurrents"), (r) => d(r, recurring), "money", false],
       [L("Net result", "Résultat net"), (r) => d(r, (x) => x.financial.netResult), "money", true],
@@ -2399,6 +3185,8 @@
 
   // Cards already show their consequences, so their button adds straight to the plan.
   function reviewButton(key, payload, label) {
+    const lock = calendarLock(payload);
+    if (lock) return `<button class="button secondary" disabled title="${escapeHtml(lock.message)}">🔒 ${escapeHtml(lock.court)}</button>`;
     const pending = state.pending[key];
     const sameToggle = pending && typeof payload.value === "boolean" && pending.payload.kind === payload.kind && pending.payload.targetId === payload.targetId;
     if (pending && (sameToggle || JSON.stringify(pending.payload) === JSON.stringify(payload))) return `<span class="in-plan">✓ ${escapeHtml(L("In plan", "Dans le plan"))}</span><button class="button secondary" data-remove-action="${escapeHtml(key)}">${escapeHtml(L("Undo", "Annuler"))}</button>`;
@@ -2430,7 +3218,7 @@
     if (kind === "room-add") return onceThenAnnual;
     if (kind === "parking") return payload.value ? onceThenAnnual : once;
     if (["price", "service-pace", "staff-allocation", "schedule"].includes(kind)) return standing;
-    if (["opening-period", "dropoff", "stock-strategy", "hr-strategy", "marketing-strategy", "salary"].includes(kind)) return annual;
+    if (["opening-period", "dropoff", "stock-strategy", "hr-strategy", "marketing-strategy", "salary", "manager-pay"].includes(kind)) return annual;
     if (kind === "sustainability") return ["energyUpgrade", "heatPump", "solar", "accessPlan", "wasteStrategy"].includes(payload.targetId) ? onceThenAnnual : once;
     return once;
   }
@@ -2589,7 +3377,7 @@
     if (Math.abs(climateDelta) >= .5 || (a.staffClimate ?? 50) < (sm.slowBelow ?? 0)) {
       const cause = mainCause(so.climateParts, climateDelta);
       const slow = tiredSlowdown({ social: a });
-      const effect = (a.staffClimate ?? 50) < RESIGN_CLIMATE ? L("someone resigns at year end", "quelqu’un démissionne en fin d’année")
+      const effect = (a.staffClimate ?? 50) < D.staffModel.resignClimate ? L("someone resigns at year end", "quelqu’un démissionne en fin d’année")
         : slow > 0 ? L(`next year every case takes ${pct(slow)} more time, and absences rise`, `l’an prochain, chaque cas prend ${pct(slow)} de temps en plus, et les absences montent`)
         : climateDelta < 0 ? L("still above the line: no cost yet", "encore au-dessus de la ligne : pas encore de coût") : L("absences fall", "les absences baissent");
       add(slow > 0 ? "bad" : climateDelta < 0 ? "warn" : "good", L(`Staff climate ${number(b.staffClimate)} → ${number(a.staffClimate)}`, `Climat de l’équipe ${number(b.staffClimate)} → ${number(a.staffClimate)}`) + (cause ? ` (${cause.label})` : ""), effect, DRIVER_TARGET[cause?.key] || { domain: "team" });
@@ -2619,6 +3407,12 @@
     if (pressure > 50) add("warn", L(`Access pressure ${number(pressure)}`, `Pression d’accès ${number(pressure)}`), L(`costs ${decimal((pressure - 50) * (sm.pressureTrustSlope || 0), 1)} trust next year`, `coûte ${decimal((pressure - 50) * (sm.pressureTrustSlope || 0), 1)} de confiance l’an prochain`), { drawer: "rooms" });
     const before = { ...state, history: state.history.filter((r) => r.turn < report.turn) };
     (report.commitments || []).filter((c) => !c.ok).forEach((c) => add("bad", L(`Promise missed: ${stakeholderLabel(c.id)}`, `Promesse manquée : ${stakeholderLabel(c.id)}`), L(`next year: ${commitmentConsequence(c.id, false, before, report)}`, `l’an prochain : ${commitmentConsequence(c.id, false, before, report)}`), c.id === "bank" ? { drawer: "finance" } : c.id === "commune" ? { domain: "sustainability" } : c.id === "peers" ? { drawer: "services" } : c.id === "team" ? { domain: "team" } : { drawer: "rooms" }));
+    // The owners took more than the law allows: the manager answers for it, and the bank says no next year.
+    // A vet who leaves can be replaced next year, even before the calendar opens hiring.
+    const veto = (report.operational.staffRows || []).filter((row) => row.role === "vet").map((row) => row.id);
+    const partis = new Set((report.resignations || []).map((r) => r.id));
+    if (veto.length && veto.every((id) => partis.has(id))) (report.resignations || []).filter((r) => veto.includes(r.id)).forEach((r) => add("bad", L(`${r.name} resigned: the clinic has no vet left`, `${r.name} a démissionné : la clinique n’a plus de vétérinaire`), L("you may hire a replacement vet next year, whatever the calendar", "vous pouvez engager une vétérinaire de remplacement l’an prochain, quel que soit le calendrier"), { drawer: "recruitment" }));
+    if (report.dividendeIllegal) add("bad", L(`Dividend of ${money(report.financial.dividende)}, above the ${money(report.dividendeAutorise || 0)} the law allows`, `Dividende de ${money(report.financial.dividende)}, au-delà des ${money(report.dividendeAutorise || 0)} que la loi permet`), L("the manager is personally exposed; the bank refuses any new loan next year", "la gérante est personnellement exposée ; la banque refuse tout nouvel emprunt l’an prochain"), { domain: "business" });
     return lines;
   }
 
@@ -2708,7 +3502,8 @@
     const passed = goals.filter((goal) => goal.ok).length;
     const carbonDelta = forecast.carbon.total - state.carbonBaseline.total;
     const signals = getBeginnerSignals(forecast, planned);
-    const showGuide = (state.year === 1 && !state.uiPreferences.beginnerGuideDismissed) || ui.reopenBeginnerGuide;
+    // One card at a time: the year guide waits until the setup card is answered.
+    const showGuide = (state.year === 1 && !state.uiPreferences.beginnerGuideDismissed && !setupBannerShown()) || ui.reopenBeginnerGuide;
     const hideOutcomes = forecastPrecision() === "costs";
     return `<section class="page"><div class="page-heading"><div><h1>${escapeHtml(L("Clinic overview", "Vue d’ensemble de la clinique"))}</h1></div></div>
       ${renderStartBanner()}
@@ -2991,7 +3786,7 @@
     const availableHours = currentRow?.availableHours || 0;
     const rowHours = draft.map((allocation) => Math.round(availableHours * allocation.share));
     const totalHours = rowHours.reduce((sum, value) => sum + value, 0);
-    const draftOvertimeCost = (draftRow?.overtimePay || 0) * (1 + SOCIAL_CHARGE_RATE);
+    const draftOvertimeCost = (draftRow?.overtimePay || 0) * (1 + D.financeModel.socialChargeRate);
     const draftHours = displayedHours(draftRow);
     const draftBlocked = draftHours.blocked;
     const draftUsed = draftHours.used;
@@ -2999,12 +3794,12 @@
     const meterText = percent === 0 ? L("0% assigned — give this person at least one service", "0 % affectés — donnez au moins un service à cette personne")
       : draftBlocked >= 1 && draftUsed < 1 ? L(`${percent}% assigned, but all ${number(draftBlocked)} h are blocked until training — no cases can be handled`, `${percent} % affectés, mais les ${number(draftBlocked)} h sont bloquées jusqu’à la formation — aucun cas ne peut être traité`)
       : draftBlocked >= 1 ? L(`${percent}% assigned · ${number(draftBlocked)} h blocked until training`, `${percent} % affectés · ${number(draftBlocked)} h bloquées jusqu’à la formation`)
-      : percent > 100 ? L(`${percent}% assigned, maximum ${Math.round(MAX_ALLOCATION * 100)}% · overtime forecast: ${number(draftRow?.overtimeHours || 0)} h ≈ ${money(draftOvertimeCost)}`, `${percent} % affectés, maximum ${Math.round(MAX_ALLOCATION * 100)} % · heures supplémentaires prévues : ${number(draftRow?.overtimeHours || 0)} h ≈ ${money(draftOvertimeCost)}`)
+      : percent > 100 ? L(`${percent}% assigned, maximum ${Math.round(D.staffModel.maxAllocation * 100)}% · overtime forecast: ${number(draftRow?.overtimeHours || 0)} h ≈ ${money(draftOvertimeCost)}`, `${percent} % affectés, maximum ${Math.round(D.staffModel.maxAllocation * 100)} % · heures supplémentaires prévues : ${number(draftRow?.overtimeHours || 0)} h ≈ ${money(draftOvertimeCost)}`)
       : draftUnused >= 1 ? L(`${percent}% assigned · ${number(draftUnused)} h paid and unused`, `${percent} % affectés · ${number(draftUnused)} h payées sans emploi`)
       : L("100% assigned — fully booked, no overtime", "100 % affectés — temps plein, sans heures supplémentaires");
     const zoneClass = !valid ? "warn" : (draftRow?.overtimeHours || 0) >= 1 ? "overtime" : total > 1.0001 ? "idle" : { good: "ready", warn: "idle", bad: "overtime" }[assignedTone(total)];
     const hoursFlow = currentRow ? L(`${number(currentRow.contractedHours)} contracted − ${number(currentRow.expectedAbsenceHours)} expected absence${absenceNote(currentRow)} − ${number(currentRow.trainingHours)} training${currentRow.onboardingHours > 1 ? ` − ${number(currentRow.onboardingHours)} onboarding` : ""} −${number(currentRow.nonClinicalHours)} other duties = ${number(currentRow.availableHours)} available hours`, `${number(currentRow.contractedHours)} contractuelles − ${number(currentRow.expectedAbsenceHours)} d’absence prévue${absenceNote(currentRow)} − ${number(currentRow.trainingHours)} de formation${currentRow.onboardingHours > 1 ? ` − ${number(currentRow.onboardingHours)} d’intégration` : ""} −${number(currentRow.nonClinicalHours)} d’autres tâches = ${number(currentRow.availableHours)} heures disponibles`) : "";
-    return `<div class="allocation-editor">${closedHoursWarning(person, planned, currentRow?.availableHours)}<details class="note-repliee regle-affectation" data-pli="regleOpen" ${ui.regleOpen ? "open" : ""}><summary>${escapeHtml(L("How the percentages work", "Comment fonctionnent les pourcentages"))}</summary><p>${escapeHtml(L(`Up to 100%, changing percentages moves existing hours; it does not create new hours. Above 100% is paid overtime (${OVERTIME_PREMIUM}× pay, maximum ${Math.round(MAX_ALLOCATION * 100)}%) and lowers staff climate. Below 100% is paid idle time.`, `Jusqu’à 100 %, modifier les pourcentages déplace des heures existantes ; cela ne crée pas de nouvelles heures. Au-delà de 100 %, ce sont des heures supplémentaires payées (${String(OVERTIME_PREMIUM).replace(".", ",")}× le salaire, ${Math.round(MAX_ALLOCATION * 100)} % maximum) qui dégradent le climat d’équipe. En dessous, le temps payé reste inoccupé.`))}</p></details>${hoursFlow ? `<p class="hours-flow">${escapeHtml(hoursFlow)}</p>` : ""}${reservationNote(person, planned, currentRow)}<div class="allocation-total marque-cent ${zoneClass}"><strong>${escapeHtml(meterText)}</strong><span class="total-heures">${escapeHtml(L(`${number(totalHours)} h assigned of ${number(availableHours)} h available`, `${number(totalHours)} h affectées sur ${number(availableHours)} h disponibles`))}</span>${hourBar(draftRow, comparison.after)}<p class="draft-delta">${[[L("Cases served", "Cas traités"), comparison.before.operational.totalHonored, comparison.after.operational.totalHonored, "number"], [L("Net result", "Résultat net"), comparison.before.financial.netResult, comparison.after.financial.netResult, "money"]].map(([label, b, a, type]) => `<span>${escapeHtml(label)} <strong class="${Math.round(a - b) > 0 ? "good-text" : Math.round(a - b) < 0 ? "bad-text" : ""}">${escapeHtml(forecastText(a - b, type, { signed: true }))}</strong></span>`).join("")}</p></div><div class="allocation-rows">${draft.map((allocation, index) => { const service = SERVICE_BY_ID[allocation.serviceId]; const qualified = personQualified(person, service); const hours = rowHours[index]; return `<article><div><strong>${escapeHtml(serviceName(service.id))}</strong>${qualified ? "" : `<span class="qualification-warning">△ ${escapeHtml(L("Needs training", "Formation nécessaire"))}</span>`}${qualified ? "" : `<small>${number(hours)} ${escapeHtml(L("hours blocked until training", "heures bloquées jusqu’à la formation"))}</small>`}${allocationRowNote(person, service, comparison.after, planned)}${allocationRemainder(draft, index) > 0 ? `<button class="text-button" data-allocation-fill="${index}">${escapeHtml(L(`Use remaining ${number((currentRow?.availableHours || 0) * allocationRemainder(draft, index))} h`, `Utiliser les ${number((currentRow?.availableHours || 0) * allocationRemainder(draft, index))} h restantes`))}</button>` : ""}</div><div class="stepper" role="group" aria-label="${escapeHtml(serviceName(service.id))}"><button data-allocation-adjust="-5" data-allocation-index="${index}" aria-label="${escapeHtml(L(`Reduce by ${number(availableHours * .05)} hours`, `Réduire de ${number(availableHours * .05)} heures`))}">−</button><span class="pas-heures"><input type="text" inputmode="numeric" autocomplete="off" value="${hours}" data-allocation-hours="${index}" aria-label="${escapeHtml(L(`Hours on ${serviceName(service.id)}`, `Heures sur ${serviceName(service.id)}`))}"><em>h</em></span><button data-allocation-adjust="5" data-allocation-index="${index}" ${total >= MAX_ALLOCATION - .0001 ? "disabled" : ""} aria-label="${escapeHtml(L(`Add ${number(availableHours * .05)} hours`, `Ajouter ${number(availableHours * .05)} heures`))}">+</button><button class="remove-allocation" data-remove-allocation="${index}" aria-label="${escapeHtml(L("Remove service", "Retirer le service"))}">×</button></div></article>`; }).join("")}</div>${ordered.length ? `<div class="add-allocation"><label><span>${escapeHtml(L("Add another service", "Ajouter un autre service"))}</span><select data-allocation-service>${optionGroup(L("Active and planned services", "Services actifs et planifiés"), activeOptions)}${optionGroup(L("Other services", "Autres services"), otherOptions)}${optionGroup(L("Needs training", "Formation nécessaire"), trainingOptions)}</select></label><button class="button secondary" data-add-allocation>${escapeHtml(L("Add at 0%", "Ajouter à 0 %"))}</button></div>` : ""}${remainingBlockers.length ? `<div class="requirement-list"><strong>${escapeHtml(L("Other blockers still apply", "D’autres blocages restent à résoudre"))}</strong>${remainingBlockers.map((item) => `<div><span>△ ${escapeHtml(serviceName(item.serviceId))}: ${escapeHtml(blockerText(item.reason))}</span></div>`).join("")}</div>` : ""}<section class="allocation-impact"><h3>${escapeHtml(L("Live impact", "Impact en direct"))}</h3><div class="comparison-list"><div><strong>${escapeHtml(L("This person’s workload", "Charge de cette personne"))}</strong><span>${pct(currentRow?.workload || 0)}</span><em>→ ${pct(draftRow?.workload || 0)}</em></div><div><strong>${escapeHtml(L("Cases this person carries", "Cas portés par cette personne"))}</strong><span>${escapeHtml(forecastText(casesCarried(comparison.before, person.id).total, "number"))}</span><em>→ ${escapeHtml(forecastText(casesCarried(comparison.after, person.id).total, "number"))}</em></div><div><strong>${escapeHtml(L("Team workload", "Charge de l’équipe"))}</strong><span>${escapeHtml(forecastText(comparison.before.operational.staffUse, "percent"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.operational.staffUse, "percent"))}</em></div><div><strong>${escapeHtml(L("Cases served", "Cas traités"))}</strong><span>${escapeHtml(forecastText(comparison.before.operational.totalHonored, "number"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.operational.totalHonored, "number"))}</em></div><div><strong>${escapeHtml(L("Net result", "Résultat net"))}</strong><span>${escapeHtml(forecastText(comparison.before.financial.netResult, "money"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.financial.netResult, "money"))}</em></div>${comparison.before.financial.overtimeCost >= 1 || comparison.after.financial.overtimeCost >= 1 ? `<div><strong>${escapeHtml(L("Overtime cost", "Coût des heures supplémentaires"))}</strong><span>${money(comparison.before.financial.overtimeCost)}</span><em>→ ${money(comparison.after.financial.overtimeCost)}</em></div>` : ""}<div><strong>${escapeHtml(L("Staff climate", "Climat de l’équipe"))}</strong><span>${escapeHtml(forecastText(comparison.before.social.after.staffClimate, "number"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.social.after.staffClimate, "number"))}</em></div><div><strong>${escapeHtml(L("Carbon footprint", "Empreinte carbone"))}</strong><span>${escapeHtml(forecastText(comparison.before.carbon.total, "carbon"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.carbon.total, "carbon"))}</em></div></div>${serviceDeltas.length ? `<ul>${serviceDeltas.map((row) => `<li><strong>${escapeHtml(serviceName(row.id))}:</strong> ${escapeHtml(row.cases > 0 ? L(`${row.cases} additional cases possible`, `${row.cases} cas supplémentaires possibles`) : L(`${Math.abs(row.cases)} fewer cases possible`, `${Math.abs(row.cases)} cas possibles en moins`))}</li>`).join("")}</ul>` : `<p>${escapeHtml(L("No change in cases served with this draft.", "Aucun changement des cas traités avec ce brouillon."))}</p>`}</section><button class="button primary" data-review-allocation="${person.id}" ${valid ? "" : "disabled"}>${escapeHtml(L("Review allocation", "Examiner l’affectation"))}</button></div>`;
+    return `<div class="allocation-editor">${closedHoursWarning(person, planned, currentRow?.availableHours)}<details class="note-repliee regle-affectation" data-pli="regleOpen" ${ui.regleOpen ? "open" : ""}><summary>${escapeHtml(L("How the percentages work", "Comment fonctionnent les pourcentages"))}</summary><p>${escapeHtml(L(`Up to 100%, changing percentages moves existing hours; it does not create new hours. Above 100% is paid overtime (${D.staffModel.overtimePremium}× pay, maximum ${Math.round(D.staffModel.maxAllocation * 100)}%) and lowers staff climate. Below 100% is paid idle time.`, `Jusqu’à 100 %, modifier les pourcentages déplace des heures existantes ; cela ne crée pas de nouvelles heures. Au-delà de 100 %, ce sont des heures supplémentaires payées (${String(D.staffModel.overtimePremium).replace(".", ",")}× le salaire, ${Math.round(D.staffModel.maxAllocation * 100)} % maximum) qui dégradent le climat d’équipe. En dessous, le temps payé reste inoccupé.`))}</p></details>${hoursFlow ? `<p class="hours-flow">${escapeHtml(hoursFlow)}</p>` : ""}${reservationNote(person, planned, currentRow)}<div class="allocation-total marque-cent ${zoneClass}"><strong>${escapeHtml(meterText)}</strong><span class="total-heures">${escapeHtml(L(`${number(totalHours)} h assigned of ${number(availableHours)} h available`, `${number(totalHours)} h affectées sur ${number(availableHours)} h disponibles`))}</span>${hourBar(draftRow, comparison.after)}<p class="draft-delta">${[[L("Cases served", "Cas traités"), comparison.before.operational.totalHonored, comparison.after.operational.totalHonored, "number"], [L("Net result", "Résultat net"), comparison.before.financial.netResult, comparison.after.financial.netResult, "money"]].map(([label, b, a, type]) => `<span>${escapeHtml(label)} <strong class="${Math.round(a - b) > 0 ? "good-text" : Math.round(a - b) < 0 ? "bad-text" : ""}">${escapeHtml(forecastText(a - b, type, { signed: true }))}</strong></span>`).join("")}</p></div><div class="allocation-rows">${draft.map((allocation, index) => { const service = SERVICE_BY_ID[allocation.serviceId]; const qualified = personQualified(person, service); const hours = rowHours[index]; return `<article><div><strong>${escapeHtml(serviceName(service.id))}</strong>${qualified ? "" : `<span class="qualification-warning">△ ${escapeHtml(L("Needs training", "Formation nécessaire"))}</span>`}${qualified ? "" : `<small>${number(hours)} ${escapeHtml(L("hours blocked until training", "heures bloquées jusqu’à la formation"))}</small>`}${allocationRowNote(person, service, comparison.after, planned)}${allocationRemainder(draft, index) > 0 ? `<button class="text-button" data-allocation-fill="${index}">${escapeHtml(L(`Use remaining ${number((currentRow?.availableHours || 0) * allocationRemainder(draft, index))} h`, `Utiliser les ${number((currentRow?.availableHours || 0) * allocationRemainder(draft, index))} h restantes`))}</button>` : ""}</div><div class="stepper" role="group" aria-label="${escapeHtml(serviceName(service.id))}"><button data-allocation-adjust="-5" data-allocation-index="${index}" aria-label="${escapeHtml(L(`Reduce by ${number(availableHours * .05)} hours`, `Réduire de ${number(availableHours * .05)} heures`))}">−</button><span class="pas-heures"><input type="text" inputmode="numeric" autocomplete="off" value="${hours}" data-allocation-hours="${index}" aria-label="${escapeHtml(L(`Hours on ${serviceName(service.id)}`, `Heures sur ${serviceName(service.id)}`))}"><em>h</em></span><button data-allocation-adjust="5" data-allocation-index="${index}" ${total >= D.staffModel.maxAllocation - .0001 ? "disabled" : ""} aria-label="${escapeHtml(L(`Add ${number(availableHours * .05)} hours`, `Ajouter ${number(availableHours * .05)} heures`))}">+</button><button class="remove-allocation" data-remove-allocation="${index}" aria-label="${escapeHtml(L("Remove service", "Retirer le service"))}">×</button></div></article>`; }).join("")}</div>${ordered.length ? `<div class="add-allocation"><label><span>${escapeHtml(L("Add another service", "Ajouter un autre service"))}</span><select data-allocation-service>${optionGroup(L("Active and planned services", "Services actifs et planifiés"), activeOptions)}${optionGroup(L("Other services", "Autres services"), otherOptions)}${optionGroup(L("Needs training", "Formation nécessaire"), trainingOptions)}</select></label><button class="button secondary" data-add-allocation>${escapeHtml(L("Add at 0%", "Ajouter à 0 %"))}</button></div>` : ""}${remainingBlockers.length ? `<div class="requirement-list"><strong>${escapeHtml(L("Other blockers still apply", "D’autres blocages restent à résoudre"))}</strong>${remainingBlockers.map((item) => `<div><span>△ ${escapeHtml(serviceName(item.serviceId))}: ${escapeHtml(blockerText(item.reason))}</span></div>`).join("")}</div>` : ""}<section class="allocation-impact"><h3>${escapeHtml(L("Live impact", "Impact en direct"))}</h3><div class="comparison-list"><div><strong>${escapeHtml(L("This person’s workload", "Charge de cette personne"))}</strong><span>${pct(currentRow?.workload || 0)}</span><em>→ ${pct(draftRow?.workload || 0)}</em></div><div><strong>${escapeHtml(L("Cases this person carries", "Cas portés par cette personne"))}</strong><span>${escapeHtml(forecastText(casesCarried(comparison.before, person.id).total, "number"))}</span><em>→ ${escapeHtml(forecastText(casesCarried(comparison.after, person.id).total, "number"))}</em></div><div><strong>${escapeHtml(L("Team workload", "Charge de l’équipe"))}</strong><span>${escapeHtml(forecastText(comparison.before.operational.staffUse, "percent"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.operational.staffUse, "percent"))}</em></div><div><strong>${escapeHtml(L("Cases served", "Cas traités"))}</strong><span>${escapeHtml(forecastText(comparison.before.operational.totalHonored, "number"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.operational.totalHonored, "number"))}</em></div><div><strong>${escapeHtml(L("Net result", "Résultat net"))}</strong><span>${escapeHtml(forecastText(comparison.before.financial.netResult, "money"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.financial.netResult, "money"))}</em></div>${comparison.before.financial.overtimeCost >= 1 || comparison.after.financial.overtimeCost >= 1 ? `<div><strong>${escapeHtml(L("Overtime cost", "Coût des heures supplémentaires"))}</strong><span>${money(comparison.before.financial.overtimeCost)}</span><em>→ ${money(comparison.after.financial.overtimeCost)}</em></div>` : ""}<div><strong>${escapeHtml(L("Staff climate", "Climat de l’équipe"))}</strong><span>${escapeHtml(forecastText(comparison.before.social.after.staffClimate, "number"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.social.after.staffClimate, "number"))}</em></div><div><strong>${escapeHtml(L("Carbon footprint", "Empreinte carbone"))}</strong><span>${escapeHtml(forecastText(comparison.before.carbon.total, "carbon"))}</span><em>→ ${escapeHtml(forecastText(comparison.after.carbon.total, "carbon"))}</em></div></div>${serviceDeltas.length ? `<ul>${serviceDeltas.map((row) => `<li><strong>${escapeHtml(serviceName(row.id))}:</strong> ${escapeHtml(row.cases > 0 ? L(`${row.cases} additional cases possible`, `${row.cases} cas supplémentaires possibles`) : L(`${Math.abs(row.cases)} fewer cases possible`, `${Math.abs(row.cases)} cas possibles en moins`))}</li>`).join("")}</ul>` : `<p>${escapeHtml(L("No change in cases served with this draft.", "Aucun changement des cas traités avec ce brouillon."))}</p>`}</section><button class="button primary" data-review-allocation="${person.id}" ${valid ? "" : "disabled"}>${escapeHtml(L("Review allocation", "Examiner l’affectation"))}</button></div>`;
   }
 
   function renderHoursByService(forecast) {
@@ -3030,9 +3825,11 @@
     return rounded;
   }
 
+  // What each service brings in: the last closed year, or — from the Business screen, and before any
+  // year is played — the year as planned.
   function renderServiceLedger() {
-    const latest = state.history.at(-1);
-    if (!latest) return `<p>${escapeHtml(L("No completed year yet.", "Aucune année terminée."))}</p>`;
+    const prevu = ui.drawerContext === "prevu" || !state.history.length;
+    const latest = prevu ? { ...simulatePlan(pendingActions()), turn: state.year } : state.history.at(-1);
     const lignes = (latest.serviceResults || []).filter((row) => row.active && row.honored > 0);
     if (!lignes.length) return `<p>${escapeHtml(L("No service treated a case this year.", "Aucun service n’a traité de cas cette année."))}</p>`;
     const totalRecettes = lignes.reduce((sum, row) => sum + row.revenue, 0);
@@ -3045,13 +3842,13 @@
     // rest and the column still ends on the clinic's own total.
     const variablesAffichees = roundToTotal([...lignes.map((row) => row.variableCosts), ...(montreStock ? [ecartStock] : [])], latest.financial.variableCosts);
     const cellule = (row, index) => {
-      const vet = row.vetDuration > 0 ? money(row.contributionPerCase / row.vetDuration) : "—";
-      const sout = row.supportDuration > 0 ? money(row.contributionPerCase / row.supportDuration) : "—";
-      return `<div role="row"><span>${escapeHtml(serviceName(row.id))}</span><span>${number(row.honored)}</span><span>${money(recettesAffichees[index])}</span><span>${money(variablesAffichees[index])}</span><span>${money(row.contributionPerCase)}</span><span>${escapeHtml(vet)}</span><span>${escapeHtml(sout)}</span></div>`;
+      const vet = row.vetDuration > 0 ? money(row.margeReelle / row.vetDuration) : "—";
+      const sout = row.supportDuration > 0 ? money(row.margeReelle / row.supportDuration) : "—";
+      return `<div role="row"><span>${escapeHtml(serviceName(row.id))}</span><span>${number(row.honored)}</span><span>${money(recettesAffichees[index])}</span><span>${money(variablesAffichees[index])}</span><span>${money(row.margeReelle)}</span><span>${escapeHtml(vet)}</span><span>${escapeHtml(sout)}</span></div>`;
     };
-    return `<p>${escapeHtml(L("Year", "Année"))} ${latest.turn}. ${escapeHtml(L("Margin per hour divides by one resource at a time — never by the two added together, which are not interchangeable.", "La marge par heure se divise par une seule ressource à la fois — jamais par les deux additionnées, qui ne sont pas interchangeables."))}</p>
+    return `<p>${escapeHtml(L("Year", "Année"))} ${latest.turn}${prevu ? escapeHtml(L(", planned", ", prévue")) : ""}. ${escapeHtml(L("Margin per hour divides by one resource at a time — never by the two added together, which are not interchangeable.", "La marge par heure se divise par une seule ressource à la fois — jamais par les deux additionnées, qui ne sont pas interchangeables."))}</p>
       <div class="hours-table ledger" role="table">
-        <div role="row"><strong>${escapeHtml(L("Service", "Service"))}</strong><strong>${escapeHtml(t("common.cases"))}</strong><strong>${escapeHtml(t("forecast.revenue"))}</strong><strong>${escapeHtml(L("Variable costs", "Coûts variables"))}</strong><strong>${escapeHtml(L("Margin / case", "Marge / cas"))}</strong><strong>${escapeHtml(L("€ / vet hour", "€ / h vét."))}</strong><strong>${escapeHtml(L("€ / support hour", "€ / h soutien"))}</strong></div>
+        <div role="row"><strong>${escapeHtml(L("Service", "Service"))}</strong><strong>${escapeHtml(t("common.cases"))}</strong><strong>${escapeHtml(t("forecast.revenue"))}</strong><strong>${escapeHtml(L("Variable costs", "Coûts variables"))}</strong><strong>${escapeHtml(L("Margin / case", "Marge / cas"))}</strong><strong>${escapeHtml(L(`${currencySymbol()} / vet hour`, `${currencySymbol()} / h vét.`))}</strong><strong>${escapeHtml(L(`${currencySymbol()} / support hour`, `${currencySymbol()} / h soutien`))}</strong></div>
         ${lignes.map(cellule).join("")}
         ${montreStock ? `<div role="row" class="ajustement"><span>${escapeHtml(L("Stock strategy, applied to the whole", "Stratégie de stock, appliquée à l’ensemble"))}</span><span>—</span><span>—</span><span>${money(variablesAffichees[variablesAffichees.length - 1])}</span><span>—</span><span>—</span><span>—</span></div>` : ""}
         <div role="row" class="total"><strong>${escapeHtml(L("Total", "Total"))}</strong><strong>${number(totalCas)}</strong><strong>${money(totalRecettes)}</strong><strong>${money(latest.financial.variableCosts)}</strong><strong>${money(totalCas ? (totalRecettes - latest.financial.variableCosts) / totalCas : 0)}</strong><strong>—</strong><strong>—</strong></div>
@@ -3098,29 +3895,343 @@
     const f = run.financial;
     const revenue = f.revenue + (f.grant || 0);
     const variable = f.variableCosts;
-    const fixed = f.totalCosts - f.variableCosts;
-    const tax = Math.max(0, revenue - f.totalCosts - f.netResult);
+    // Three kinds of cost, as the statement names them: per case, every year, once. A purchase is
+    // never a fixed cost.
+    const once = f.depensesPonctuelles ?? ((f.oneTimeCosts || 0) + (f.valeurSortie || 0));
+    const fixed = f.totalCosts - f.variableCosts - once;
+    const tax = Math.max(0, revenue + (f.produitCession || 0) - f.totalCosts - f.netResult);
     const result = f.netResult;
-    const scale = Math.max(revenue, variable + fixed + tax, 1);
+    const scale = Math.max(revenue, variable + fixed + once + tax, 1);
     const pctOf = (v) => Math.max(0, v) / scale * 100;
     const seg = (cls, v, label, extra = "") => v >= .5 ? `<span class="mb-seg ${cls} ${pctOf(v) < 16 ? "narrow" : ""}" style="width:${pctOf(v).toFixed(2)}%" title="${escapeHtml(`${label} ${money(v)}`)}"><em>${escapeHtml(label)}<b>${money(v)}</b>${extra}</em></span>` : "";
     const margin = revenue - variable;
-    const narrow = [["mb-var", L("Variable costs", "Coûts variables"), variable], ["mb-fixed", L("Fixed costs", "Coûts fixes"), fixed], ["mb-tax", L("Tax", "Impôt"), tax], ["mb-result", L("Net result", "Résultat net"), Math.max(0, result)]].filter(([, , v]) => v >= .5 && pctOf(v) < 16);
-    const aria = `${L("Revenue", "Recettes")} ${money(revenue)}. ${L("Variable costs", "Coûts variables")} ${money(variable)}, ${L("Fixed costs", "Coûts fixes")} ${money(fixed)}, ${L("Tax", "Impôt")} ${money(tax)}, ${result >= 0 ? L("Net result", "Résultat net") : L("Loss", "Perte")} ${money(result)}. ${L("Contribution margin", "Marge sur coûts variables")} ${money(margin)}.`;
+    const narrow = [["mb-var", L("Variable costs", "Coûts variables"), variable], ["mb-fixed", L("Fixed costs", "Coûts fixes"), fixed], ["mb-once", L("Paid once", "Dépenses ponctuelles"), once], ["mb-tax", L("Tax", "Impôt"), tax], ["mb-result", L("Net result", "Résultat net"), Math.max(0, result)]].filter(([, , v]) => v >= .5 && pctOf(v) < 16);
+    const aria = `${L("Revenue", "Recettes")} ${money(revenue)}. ${L("Variable costs", "Coûts variables")} ${money(variable)}, ${L("Fixed costs", "Coûts fixes")} ${money(fixed)}, ${L("Paid once", "Dépenses ponctuelles")} ${money(once)}, ${L("Tax", "Impôt")} ${money(tax)}, ${result >= 0 ? L("Net result", "Résultat net") : L("Loss", "Perte")} ${money(result)}. ${L("Contribution margin", "Marge sur coûts variables")} ${money(margin)}.`;
     return `<section class="card-section money-bar" role="img" aria-label="${escapeHtml(aria)}">
       <div class="mb-row"><span class="mb-label">${escapeHtml(L("Revenue", "Recettes"))}</span><div class="mb-track">${seg("mb-rev", revenue, L("Revenue", "Recettes"))}</div></div>
-      <div class="mb-row"><span class="mb-label">${escapeHtml(L("Where it goes", "Où elle va"))}</span><div class="mb-track">${seg("mb-var", variable, L("Variable costs", "Coûts variables"))}${seg("mb-fixed", fixed, L("Fixed costs", "Coûts fixes"))}${seg("mb-tax", tax, L("Tax", "Impôt"))}${result > 0 ? seg("mb-result", result, L("Net result", "Résultat net")) : ""}${result < 0 ? `<i class="mb-loss" style="left:${pctOf(revenue).toFixed(2)}%;width:${pctOf(-result).toFixed(2)}%"><em>${escapeHtml(L("Loss", "Perte"))} ${money(result)}</em></i>` : ""}</div></div>
+      <div class="mb-row"><span class="mb-label">${escapeHtml(L("Where it goes", "Où elle va"))}</span><div class="mb-track">${seg("mb-var", variable, L("Variable costs", "Coûts variables"))}${seg("mb-fixed", fixed, L("Fixed costs", "Coûts fixes"))}${seg("mb-once", once, L("Paid once", "Dépenses ponctuelles"))}${seg("mb-tax", tax, L("Tax", "Impôt"))}${result > 0 ? seg("mb-result", result, L("Net result", "Résultat net")) : ""}${result < 0 ? `<i class="mb-loss" style="left:${pctOf(revenue).toFixed(2)}%;width:${pctOf(-result).toFixed(2)}%"><em>${escapeHtml(L("Loss", "Perte"))} ${money(result)}</em></i>` : ""}</div></div>
       <div class="mb-row"><span class="mb-label"></span><div class="mb-track mb-bracket-track"><i class="mb-bracket" style="left:${pctOf(variable).toFixed(2)}%;width:${pctOf(Math.max(0, margin)).toFixed(2)}%"><em>${escapeHtml(L("Contribution margin", "Marge sur coûts variables"))} <b>${money(margin)}</b></em></i></div></div>
       <ul class="hb-legend">${narrow.map(([cls, label, v]) => `<li><b class="${cls}"></b>${escapeHtml(label)} <strong>${money(v)}</strong></li>`).join("")}<li>${escapeHtml(L("Total costs", "Coûts totaux"))} <strong>${money(f.totalCosts)}</strong></li>${f.variableCosts > 0 ? `<li><small>${escapeHtml(L("Variable costs", "Coûts variables"))} : ${escapeHtml(variableCostNote(run))}</small></li>` : ""}${overtimeNote(run) ? `<li><small>${escapeHtml(L("Fixed costs", "Coûts fixes"))} : ${escapeHtml(overtimeNote(run))}</small></li>` : ""}</ul>
     </section>`;
   }
 
+  // ── The accounts, shown and explained (the game shows; students read) ──
+  // Each line says what it is, where it comes from (a calculation, or a source with its date and
+  // quality from data.js › paysProfils), and why it matters for a decision.
+  const PROFIL = D.paysProfils.BE;
+  const qualiteTexte = (q) => ({ officiel: L("official", "officiel"), professionnel: L("professional source", "source professionnelle"), indicatif: L("indicative", "indicatif"), "à confirmer": L("to confirm", "à confirmer") }[q] || q);
+  const sourceTexte = (entree) => entree?.source ? `${entree.source.titre} (${entree.source.date}, ${qualiteTexte(entree.source.qualite)})` : "";
+  function infoLigne(id) {
+    const fm = D.financeModel;
+    const I = {
+      ca: [L("What the cases served brought in, before VAT (in the accounts: « turnover »).", "Ce que les cas traités ont rapporté, hors TVA (en comptabilité : « chiffre d’affaires »)."), L(`Price × cases, service by service (see « What each service brings in »). Prices are before VAT: ${sourceTexte(PROFIL.tva)}. Price levels: ${sourceTexte(PROFIL.prix)}.`, `Prix × cas, service par service (voir « Ce que chaque service rapporte »). Les prix sont hors TVA : ${sourceTexte(PROFIL.tva)}. Niveaux de prix : ${sourceTexte(PROFIL.prix)}.`), L("The only money the activity brings in.", "La seule entrée d’argent de l’activité.")],
+      achats: [L("What each case uses up: vaccines, reagents, sutures (in the accounts: « purchases consumed »).", "Ce que chaque cas consomme : vaccins, réactifs, fils (en comptabilité : « achats consommés »)."), L("Each service’s supply share × its revenue, × the stock strategy.", "La part de fournitures de chaque service × ses recettes, × la stratégie de stock."), L("They rise with every case: price minus supplies is what a case leaves.", "Elles montent avec chaque cas : le prix moins les fournitures, c’est ce que laisse un cas.")],
+      charges: [L("Rent, leases, upkeep, opening hours, stock, communication, administration.", "Loyers, locations, entretien, horaires, stock, communication, administration."), L("The clinic’s choices, year by year (Care and Team screens).", "Les choix de la clinique, année par année (écrans Soins et Équipe)."), L("They exist whether cases happen or not.", "Elles existent que les cas aient lieu ou non.")],
+      uniques: [L("Spent once this year: training, hiring fees, a team action, a move.", "Dépensé une fois cette année : formation, frais d’annonce, action d’équipe, déménagement."), L("The year’s one-off decisions.", "Les décisions ponctuelles de l’année."), L("They do not come back next year: leave them out of break-even.", "Elles ne reviennent pas l’an prochain : laissez-les hors du seuil de rentabilité.")],
+      personnel: [L("Employees’ gross salaries, employer charges and paid overtime.", "Salaires bruts des employés, charges patronales et heures supplémentaires payées."), L(`Employer charges ${pct(fm.socialChargeRate)}: ${sourceTexte(PROFIL.chargesPatronales)}. Salary levels: ${sourceTexte(PROFIL.salaires)}.`, `Charges patronales ${pct(fm.socialChargeRate)} : ${sourceTexte(PROFIL.chargesPatronales)}. Niveaux de salaires : ${sourceTexte(PROFIL.salaires)}.`), L("Usually the largest cost: an hour paid and not used costs as much as one worked.", "Souvent le plus gros coût : une heure payée et non employée coûte autant qu’une heure travaillée.")],
+      gerant: [L("What the owners pay the manager, and her self-employed contributions.", "Ce que les associés versent à la gérante, et ses cotisations d’indépendante."), L(`Your decision (Team › the manager). Contributions ${pct(fm.managerContributionRate)} up to ${money(fm.managerContributionCap)}: ${sourceTexte(PROFIL.cotisationsGerant)}.`, `Votre décision (Équipe › la gérante). Cotisations ${pct(fm.managerContributionRate)} jusqu’à ${money(fm.managerContributionCap)} : ${sourceTexte(PROFIL.cotisationsGerant)}.`), L("It is how the owners are paid — and a cost for the company. Her extra hours are not paid.", "C’est ainsi que les associés sont payés — et une charge pour la société. Ses heures en plus ne sont pas payées.")],
+      ebe: [L("EBE: what the activity produces each year, before depreciation, interest and tax.", "EBE : ce que l’activité produit chaque année, avant amortissements, intérêts et impôt."), L("Revenue − supplies − charges − one-off expenses − staff − manager (+ grant).", "Recettes − achats − charges − dépenses ponctuelles − personnel − gérant (+ subvention)."), L("It is the money the activity makes: it pays the investments, the loan, the tax and the owners.", "C’est l’argent que fait l’activité : il paie les investissements, l’emprunt, l’impôt et les associés.")],
+      amortissements: [L("The yearly share of what was bought: price ÷ years of use.", "La part annuelle de ce qui a été acheté : prix ÷ années d’usage."), L(`Equipment ${fm.depreciationEquipment} years, fit-outs ${fm.depreciationRoom}, installations ${fm.depreciationSustainability}: ${sourceTexte(PROFIL.amortissement)}. What the clinic owned at the start counts as already depreciated.`, `Équipement ${fm.depreciationEquipment} ans, aménagements ${fm.depreciationRoom}, installations ${fm.depreciationSustainability} : ${sourceTexte(PROFIL.amortissement)}. Ce que la clinique possédait au départ compte comme déjà amorti.`), L("A purchase weighs on every year it serves, not only the year it is paid. The cash, though, leaves at once.", "Un achat pèse sur chaque année où il sert, pas seulement l’année où il est payé. L’argent, lui, sort tout de suite.")],
+      interets: [L("Interest on the bank loan.", "Les intérêts de l’emprunt."), L("Remaining loan × the rate the bank gave.", "Emprunt restant × le taux accordé par la banque."), L("The cost of borrowing; repaying the loan itself is not a cost, only cash.", "Le coût d’emprunter ; rembourser l’emprunt lui-même n’est pas une charge, seulement de la trésorerie.")],
+      impot: [L("Corporate tax on the profit.", "L’impôt des sociétés sur le bénéfice."), L(`${pct(fm.taxReducedRate)} on the first ${money(fm.taxReducedBand)} if the manager is paid at least ${money(fm.taxReducedMinPay)}, ${pct(fm.taxRate)} beyond; after losses carried forward. ${sourceTexte(PROFIL.impotSocietes)}.`, `${pct(fm.taxReducedRate)} sur les premiers ${money(fm.taxReducedBand)} si la gérante reçoit au moins ${money(fm.taxReducedMinPay)}, ${pct(fm.taxRate)} au-delà ; après les pertes reportées. ${sourceTexte(PROFIL.impotSocietes)}.`), L("Only a profit is taxed: a loss carries forward and lowers a later tax.", "Seul un bénéfice est taxé : une perte se reporte et allège un impôt plus tard.")],
+      resultat: [L("Net result: what the year leaves the company.", "Résultat net : ce que l’année laisse à la société."), L("Result before tax − tax.", "Résultat avant impôt − impôt."), L("It is the profit the owners may distribute, within the law.", "C’est le bénéfice que les associés peuvent distribuer, dans les limites de la loi.")],
+      tresorerie: [L("Cash at the end of the year: not the same as the result.", "L’argent en caisse en fin d’année : ce n’est pas le résultat."), L("Start + result + depreciation (no cash leaves) − investments paid − loan repaid + loan received − dividends.", "Début + résultat + amortissements (aucun argent ne sort) − investissements payés − emprunt remboursé + emprunt reçu − dividendes."), L("A profitable clinic can run out of cash the year it invests; a clinic with cash can be losing money.", "Une clinique bénéficiaire peut manquer d’argent l’année où elle investit ; une clinique avec de la trésorerie peut perdre de l’argent.")],
+      // Simple accounts (owner, 2026-11-02).
+      fournitures: [L("What each case uses up: vaccines, reagents, sutures. An amount per case, whatever the price.", "Ce que chaque cas consomme : vaccins, réactifs, fils. Un montant par cas, quel que soit le prix."), L("The supplies of a case × cases served (rushed cases that come back use supplies too), × the stock strategy.", "Les fournitures d’un cas × cas traités (les cas pressés qui reviennent en consomment aussi), × la stratégie de stock."), L("If the price goes up and fewer clients come, they fall: a case that does not come uses nothing.", "Si le prix monte et que moins de clients viennent, ils baissent : un cas qui ne vient pas ne consomme rien.")],
+      marge: [L("What the cases leave once their supplies are paid.", "Ce que les cas laissent une fois leurs fournitures payées."), L("Revenue − variable costs.", "Recettes − coûts variables."), L("It is the only money that can pay salaries and rent.", "C’est le seul argent qui puisse payer les salaires et le loyer.")],
+      locaux: [L("Fixed cost: rent, room rents, leases and upkeep of equipment, parking.", "Coût fixe : loyer, loyers des salles, locations et entretien du matériel, parking."), L("Paid every year, whether cases come or not.", "Payé chaque année, que les cas viennent ou non."), L("It does not move with activity: only a decision moves it.", "Il ne bouge pas avec l’activité : seule une décision le fait bouger.")],
+      autres: [L("Fixed cost: opening hours, stock, team strategy, communication, sustainability, administration.", "Coût fixe : horaires, stock, stratégie d’équipe, communication, durabilité, administration."), L("Paid every year, whether cases come or not.", "Payé chaque année, que les cas viennent ou non."), L("Each line is a decision that keeps costing until it is changed.", "Chaque ligne est une décision qui coûte jusqu’à ce qu’on la change.")],
+      courant: [L("What the year's activity leaves: margin − fixed costs.", "Ce que l’activité de l’année laisse : marge − coûts fixes."), L("Before what is paid once, interest and tax.", "Avant ce qui est payé une fois, les intérêts et l’impôt."), L("It says whether the clinic, as it runs, pays for itself.", "Il dit si la clinique, telle qu’elle tourne, se paie elle-même.")],
+      ponctuelles: [L("Paid once this year: a purchase, a fit-out, a training, a hiring fee.", "Payé une fois cette année : un achat, un aménagement, une formation, des frais d’annonce."), L("Counted in full the year it is paid.", "Compté en entier l’année où il est payé."), L("It does not come back next year: judge it over several years, not on this one.", "Il ne revient pas l’an prochain : jugez-le sur plusieurs années, pas sur celle-ci.")],
+      retrait: [L("What the associates take out of the year's profit: their pay as owners.", "Ce que les associés retirent du bénéfice de l’année : ce qu’ils gagnent comme propriétaires."), L(`${pct(D.financeModel.partAssocies || 0)} of the net result when it is positive, nothing after a loss. A rule of this course, set by your teacher; in a real company it is the associates' decision.`, `${pct(D.financeModel.partAssocies || 0)} du résultat net s’il est positif, rien après une perte. Une règle de ce cours, fixée par votre enseignant ; dans une vraie société, c’est la décision des associés.`), L("It leaves the cash, not the result: what is taken out cannot pay for a project.", "Il sort de la caisse, pas du résultat : ce qui est retiré ne paiera pas un projet.")],
+      resultatSimple: [L("Net result: what the year leaves the company.", "Résultat net : ce que l’année laisse à la société."), L("Operating result − paid once − interest − tax.", "Résultat courant − dépenses ponctuelles − intérêts − impôt."), L("It is what the associates judge the year by; the company keeps it.", "C’est ce sur quoi les associés jugent l’année ; la société le garde.")],
+      tresorerieSimple: [L("Cash at the end of the year: not the same as the result.", "L’argent en caisse en fin d’année : ce n’est pas le résultat."), L("Start + net result − what the associates take out + loan received − loan repaid.", "Début + résultat net − ce que les associés retirent + emprunt reçu − emprunt remboursé."), L("A loan fills the cash without being a gain: a clinic can lose money and still have cash, for a while.", "Un emprunt remplit la caisse sans être un gain : une clinique peut perdre de l’argent et avoir encore de la trésorerie, un temps.")],
+      impotSimple: [L("Corporate tax on the profit.", "L’impôt des sociétés sur le bénéfice."), L(`${pct(fm.taxRate)} of the result, if it is positive, after losses carried forward. ${sourceTexte(PROFIL.impotSocietes)}.`, `${pct(fm.taxRate)} du résultat s’il est positif, après les pertes reportées. ${sourceTexte(PROFIL.impotSocietes)}.`), L("Only a profit is taxed: a loss carries forward and lowers a later tax.", "Seul un bénéfice est taxé : une perte se reporte et allège un impôt plus tard.")],
+      dividende: [L("What the law lets the owners take now.", "Ce que la loi permet aux associés de prendre maintenant."), L(`Past profits not yet distributed, and no more than leaves this year’s forecast cash at zero (simplified). ${sourceTexte(PROFIL.distribution)}. Withholding tax ${pct(fm.dividendWithholding)}: ${sourceTexte(PROFIL.precompteDividendes)}.`, `Les bénéfices passés non encore distribués, et pas plus que ce qui laisse la trésorerie prévue de l’année à zéro (simplifié). ${sourceTexte(PROFIL.distribution)}. Précompte ${pct(fm.dividendWithholding)} : ${sourceTexte(PROFIL.precompteDividendes)}.`), L("Beyond it the manager answers personally, and the bank refuses credit next year.", "Au-delà, la gérante en répond personnellement, et la banque refuse le crédit l’an prochain.")]
+    }[id];
+    if (!I) return "";
+    return `<details class="info"><summary aria-label="${escapeHtml(L("What is this?", "Qu’est-ce que c’est ?"))}">ⓘ</summary><dl><dt>${escapeHtml(L("What", "Quoi"))}</dt><dd>${escapeHtml(I[0])}</dd><dt>${escapeHtml(L("From", "D’où"))}</dt><dd>${escapeHtml(I[1])}</dd><dt>${escapeHtml(L("Why it matters", "Pourquoi ça compte"))}</dt><dd>${escapeHtml(I[2])}</dd></dl></details>`;
+  }
+  // Last closed year beside this year's plan, line by line.
+  function renderCompteResultat(forecast) {
+    if (forecastPrecision() === "costs") return "";
+    // This year only: the years side by side live in Gestion › Les années.
+    // Simple accounts: three kinds of cost (per case, every year, once) and three results.
+    const simples = [
+      ["ca", L("Revenue", "Recettes"), (f) => f.revenue, ""],
+      ["fournitures", L("Variable costs (supplies, per case)", "Coûts variables (fournitures, par cas)"), (f) => -f.variableCosts, ""],
+      ["marge", L("= Contribution margin", "= Marge sur coûts variables"), (f) => f.revenue - f.variableCosts, "subtotal"],
+      ["personnel", L("Fixed costs · Staff (salaries, charges, overtime)", "Coûts fixes · Personnel (salaires, charges, heures sup.)"), (f) => -(f.personnel ?? 0), ""],
+      ["locaux", L("Fixed costs · Premises and equipment", "Coûts fixes · Locaux et équipement"), (f) => -(f.facilityCosts ?? 0), ""],
+      ["autres", L("Fixed costs · Other yearly costs", "Coûts fixes · Autres frais de l’année"), (f) => -((f.chargesExternes ?? 0) - (f.facilityCosts ?? 0)), ""],
+      [null, L("Grant", "Subvention"), (f) => f.grant || 0, "small"],
+      ["courant", L("= Operating result", "= Résultat courant"), (f) => f.resultatCourant ?? 0, "subtotal"],
+      ["ponctuelles", L("Paid once (purchases, fit-outs, training, hiring fees)", "Dépenses ponctuelles (achats, aménagements, formations, annonces)"), (f) => -(f.depensesPonctuelles ?? f.oneTimeCosts ?? 0), ""],
+      [null, L("Equipment sold", "Équipement vendu"), (f) => f.produitCession || 0, "small"],
+      ["interets", L("Interest", "Intérêts"), (f) => -(f.loanInterest || 0), ""],
+      ["impotSimple", L("Corporate tax", "Impôt des sociétés"), (f) => -(f.tax || 0), ""],
+      ["resultatSimple", L("= Net result", "= Résultat net"), (f) => f.netResult, "total"],
+      ["retrait", L(`Taken out by the associates (${pct(D.financeModel.partAssocies || 0)} of a profit)`, `Retiré par les associés (${pct(D.financeModel.partAssocies || 0)} d’un bénéfice)`), (f) => -(f.retraitAssocies || 0), ""]
+    ];
+    const lignes = (!comptesDetailles() ? simples : [
+      ["ca", L("Revenue", "Recettes"), (f) => f.revenue, ""],
+      ["achats", L("Variable costs", "Coûts variables"), (f) => -f.variableCosts, ""],
+      ["charges", L("External charges", "Charges externes"), (f) => -(f.chargesExternes ?? 0), ""],
+      ["uniques", L("One-off expenses", "Dépenses ponctuelles"), (f) => -(f.oneTimeCosts || 0), ""],
+      ["personnel", L("Staff (salaries, charges, overtime)", "Personnel (salaires, charges, heures sup.)"), (f) => -(f.personnel ?? 0), ""],
+      ["gerant", L("Manager’s pay and contributions", "Rémunération du gérant et cotisations"), (f) => -(f.gerant ?? 0), ""],
+      [null, L("Grant", "Subvention"), (f) => f.grant || 0, "small"],
+      ["ebe", L("EBE (gross operating surplus)", "EBE (excédent brut d’exploitation)"), (f) => f.ebe ?? 0, "subtotal"],
+      ["amortissements", L("Depreciation", "Amortissements"), (f) => -(f.amortissements || 0), ""],
+      [null, L("Asset sold or closed", "Cession ou sortie d’équipement"), (f) => f.resultatCession || 0, "small"],
+      ["interets", L("Interest", "Intérêts"), (f) => -(f.loanInterest || 0), ""],
+      [null, L("Result before tax", "Résultat avant impôt"), (f) => f.operatingResult, "subtotal"],
+      ["impot", L("Corporate tax", "Impôt des sociétés"), (f) => -(f.tax || 0), ""],
+      ["resultat", L("Net result", "Résultat net"), (f) => f.netResult, "total"]
+    ]).filter(([, , get, cls]) => cls !== "small" || Math.abs(get(forecast.financial)) >= 1);
+    const cell = (v) => escapeHtml(forecastText(v, "money"));
+    const tresorerie = `<tr class="cash"><th>${escapeHtml(L("End treasury (cash, not result)", "Trésorerie finale (l’argent, pas le résultat)"))} ${infoLigne(comptesDetailles() ? "tresorerie" : "tresorerieSimple")}</th><td>${cell(forecast.financial.treasury)}</td></tr>`;
+    return `<section class="card-section statement"><div class="panel-heading"><div><h2>${escapeHtml(L("Income statement", "Compte de résultat"))}</h2><p>${escapeHtml(L("How the year’s result is built, line by line. ⓘ: what a line is, where it comes from, why it matters.", "Comment le résultat de l’année se forme, ligne par ligne. ⓘ : ce qu’est une ligne, d’où elle vient, pourquoi elle compte."))}</p></div></div>
+      <div class="table-wrap"><table class="statement-table"><thead><tr><th></th><th>${escapeHtml(L(`Year ${state.year}, planned`, `Année ${state.year}, prévue`))}</th></tr></thead><tbody>${lignes.map(([id, label, get, cls]) => `<tr class="${cls}"><th>${escapeHtml(label)} ${id ? infoLigne(id) : ""}</th><td>${cell(get(forecast.financial))}</td></tr>`).join("")}${tresorerie}</tbody></table></div></section>`;
+  }
+  // The owners' money: two scoreboards (the company's, theirs), the manager's pay, and the dividend
+  // with what the law allows. Shown once the calendar opens the manager's pay.
+  function renderAssocies(planned) {
+    if (!shown("proprietaires")) return "";
+    const gerante = planned.staff.find((p) => p.gerant);
+    const lignes = compteAssocies();
+    const cumul = lignes.reduce((sum, l) => sum + l.net, 0);
+    const prevu = pendingActions().find((a) => a.payload.kind === "dividend");
+    const permis = shown("dividendes") ? dividendeAutorise() : 0;
+    const dividende = shown("dividendes") ? `<div class="dividend-box"><h3>${escapeHtml(L("Dividend this year", "Dividende cette année"))} ${infoLigne("dividende")}</h3><p class="dividend-allowed">${escapeHtml(L("What the law lets you distribute now:", "Ce que la loi vous permet de distribuer maintenant :"))} <strong>${escapeHtml(money(permis))}</strong></p><div class="form-stack"><label><span>${escapeHtml(L("Amount (paid out of the company’s cash)", "Montant (payé sur la trésorerie de la société)"))}</span><input type="number" min="0" step="1000" value="${prevu ? prevu.payload.value : 0}" data-dividend-input></label>${prevu && prevu.payload.value > permis + 1 ? `<p class="form-error" role="alert">${escapeHtml(L(`Above what the law allows by ${money(prevu.payload.value - permis)}: the manager will answer for it, and the bank will refuse credit next year.`, `Au-delà de ce que la loi permet de ${money(prevu.payload.value - permis)} : la gérante en répondra, et la banque refusera le crédit l’an prochain.`))}</p>` : ""}<button class="button primary" data-dividend-add>${escapeHtml(prevu ? L("Change the dividend", "Changer le dividende") : L("Add the dividend to the plan", "Ajouter le dividende au plan"))}</button><small>${escapeHtml(L(`Owners receive it after ${pct(D.financeModel.dividendWithholding)} withholding tax. It does not change the result.`, `Les associés le reçoivent après ${pct(D.financeModel.dividendWithholding)} de précompte. Il ne change pas le résultat.`))}</small></div></div>` : "";
+    return `<section class="card-section owners"><div class="panel-heading"><div><h2>${escapeHtml(L("Owners’ money", "L’argent des associés"))}</h2><p>${escapeHtml(L("You own the company. What you take, it no longer has.", "Vous êtes les associés de la société. Ce que vous prenez, elle ne l’a plus."))}</p></div></div>
+      <div class="owners-grid"><div><h3>${escapeHtml(L("The company", "La société"))}</h3><dl class="owners-dl"><dt>${escapeHtml(L("Treasury", "Trésorerie"))}</dt><dd>${escapeHtml(money(state.treasury))}</dd><dt>${escapeHtml(L("Equity (contributions + results − dividends)", "Capitaux propres (apports + résultats − dividendes)"))}</dt><dd>${escapeHtml(money(capitauxPropres()))}</dd><dt>${escapeHtml(L("Profits not yet distributed", "Bénéfices non encore distribués"))}</dt><dd>${escapeHtml(money(reservesDistribuables()))}</dd></dl></div>
+      <div><h3>${escapeHtml(L("The owners", "Les associés"))}</h3><dl class="owners-dl"><dt>${escapeHtml(L("Manager’s pay this year", "Rémunération du gérant cette année"))}</dt><dd>${escapeHtml(money(gerante?.salary || 0))} <button class="text-button" data-open-drawer="staffPerson" data-context="${escapeHtml(gerante?.id || "")}">${escapeHtml(L("change", "changer"))}</button></dd><dt>${escapeHtml(L("Received so far, net of contributions and withholding tax", "Reçu jusqu’ici, net de cotisations et de précompte"))}</dt><dd>${escapeHtml(money(cumul))}</dd></dl><small>${escapeHtml(L("Before personal income tax, which depends on each person.", "Avant l’impôt sur le revenu, propre à chacun."))}</small></div></div>
+      ${lignes.length ? `<div class="table-wrap"><table class="statement-table owners-table"><thead><tr><th>${escapeHtml(L("Year", "Année"))}</th><th>${escapeHtml(L("Manager’s pay", "Rémunération"))}</th><th>${escapeHtml(L("Contributions", "Cotisations"))}</th><th>${escapeHtml(L("Dividend", "Dividende"))}</th><th>${escapeHtml(L("Withholding", "Précompte"))}</th><th>${escapeHtml(L("Net to the owners", "Net pour les associés"))}</th></tr></thead><tbody>${lignes.map((l) => `<tr><th>${l.annee}</th><td>${escapeHtml(money(l.remuneration))}</td><td>${escapeHtml(money(-l.cotisations))}</td><td>${escapeHtml(money(l.dividende))}</td><td>${escapeHtml(money(-l.precompte))}</td><td>${escapeHtml(money(l.net))}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${dividende}</section>`;
+  }
+  // ── Gestion in three tabs (owner, 2026-11-06): this year; the years, with the clinic's evolution
+  //    read together (money, clients, team, colleagues, carbon) and a table to copy; and what each
+  //    service costs and brings. The graphs show what happened, year by year — no gauge, no forecast.
+  // Every quantity the years page shows, once: its group, its name, its unit, how to read it from a
+  // year's report, and how many decimals it keeps when copied.
+  function indicateurs(clinic = state) {
+    const goals = Object.fromEntries((D.scenarios[clinic.scenarioId]?.goals || []).map((g) => [g.id, g]));
+    const base = clinic.carbonBaseline?.perCase || 0;
+    const absences = (r) => (r.operational?.staffRows || []).reduce((s, x) => s + (x.expectedAbsenceHours || 0), 0);
+    const foyers = (r) => (r.clinicSnapshot?.clients ?? clinic.clients);
+    const f = (r) => r.financial;
+    return [
+      { id: "recettes", groupe: "argent", label: L("Revenue (€)", "Recettes (€)"), get: (r) => f(r).revenue, dec: 0, table: true },
+      { id: "variables", groupe: "argent", label: L("Variable costs (€)", "Coûts variables (€)"), get: (r) => f(r).variableCosts, dec: 0, table: true },
+      { id: "marge", groupe: "argent", label: L("Contribution margin (€)", "Marge sur coûts variables (€)"), get: (r) => f(r).revenue - f(r).variableCosts, dec: 0, table: true },
+      { id: "personnel", groupe: "argent", label: L("Staff (€)", "Personnel (€)"), get: (r) => f(r).personnel ?? (f(r).payroll + f(r).socialCharges + f(r).overtimeCost), dec: 0, table: true },
+      { id: "locaux", groupe: "argent", label: L("Premises and equipment (€)", "Locaux et équipement (€)"), get: (r) => f(r).facilityCosts, dec: 0, table: true },
+      { id: "autres", groupe: "argent", label: L("Other yearly costs (€)", "Autres frais de l’année (€)"), get: (r) => (f(r).chargesExternes ?? 0) - f(r).facilityCosts, dec: 0, table: true },
+      ...(comptesDetailles(clinic) ? [
+        { id: "gerant", groupe: "argent", label: L("Manager’s pay and contributions (€)", "Rémunération du gérant et cotisations (€)"), get: (r) => f(r).gerant || 0, dec: 0, table: true },
+        { id: "amortissements", groupe: "argent", label: L("Depreciation (€)", "Amortissements (€)"), get: (r) => f(r).amortissements || 0, dec: 0, table: true }
+      ] : []),
+      { id: "subvention", groupe: "argent", label: L("Grant (€)", "Subvention (€)"), get: (r) => f(r).grant || 0, dec: 0, table: true },
+      { id: "courant", groupe: "argent", label: L("Operating result (€)", "Résultat courant (€)"), get: (r) => f(r).resultatCourant ?? (f(r).revenue - f(r).variableCosts - (f(r).chargesExternes ?? 0) - (f(r).personnel ?? 0)), dec: 0, table: true },
+      { id: "ponctuelles", groupe: "argent", label: L("Paid once (€)", "Dépenses ponctuelles (€)"), get: (r) => f(r).depensesPonctuelles ?? f(r).oneTimeCosts, dec: 0, table: true },
+      { id: "interets", groupe: "argent", label: L("Interest (€)", "Intérêts (€)"), get: (r) => f(r).loanInterest || 0, dec: 0, table: true },
+      { id: "impot", groupe: "argent", label: L("Corporate tax (€)", "Impôt des sociétés (€)"), get: (r) => f(r).tax || 0, dec: 0, table: true },
+      { id: "net", groupe: "argent", label: L("Net result (€)", "Résultat net (€)"), get: (r) => f(r).netResult, dec: 0, table: true, ref: 0 },
+      ...(comptesDetailles(clinic) ? [] : [{ id: "retrait", groupe: "argent", label: L("Taken out by the associates (€)", "Retiré par les associés (€)"), get: (r) => f(r).retraitAssocies || 0, dec: 0, table: true }]),
+      { id: "tresorerie", groupe: "argent", label: L("End treasury (€)", "Trésorerie finale (€)"), get: (r) => f(r).treasury, dec: 0, table: true, ref: 0 },
+      { id: "couts", groupe: "argent", label: L("Total costs (€)", "Coûts totaux (€)"), get: (r) => f(r).totalCosts, dec: 0 },
+      { id: "demandes", groupe: "activite", label: L("Open requests", "Demandes ouvertes"), get: (r) => r.operational.totalDemand, dec: 0, table: true },
+      { id: "cas", groupe: "activite", label: L("Cases served", "Cas traités"), get: (r) => r.operational.totalHonored, dec: 0, table: true },
+      { id: "servi", groupe: "clients", label: L("Requests served (%)", "Demandes servies (%)"), get: (r) => r.operational.honoredRate * 100, dec: 1, table: true, ref: goals.served ? goals.served.value * 100 : null },
+      { id: "confiance", groupe: "clients", label: L("Client trust (0–100)", "Confiance des clients (0–100)"), get: (r) => r.social.after.clientTrust, dec: 1, table: true },
+      { id: "foyers", groupe: "clients", label: L("Client households", "Foyers clients"), get: foyers, dec: 0, table: true },
+      { id: "climat", groupe: "equipe", label: L("Team climate (0–100)", "Climat de l’équipe (0–100)"), get: (r) => r.social.after.staffClimate, dec: 1, table: true },
+      { id: "charge", groupe: "equipe", label: L("Team workload (%)", "Charge de l’équipe (%)"), get: (r) => r.operational.staffUse * 100, dec: 1, table: true, bande: goals.staff ? goals.staff.value.map((v) => v * 100) : null },
+      { id: "heuresSup", groupe: "equipe", label: L("Overtime (h)", "Heures supplémentaires (h)"), get: (r) => f(r).overtimeHours || 0, dec: 0, table: true },
+      { id: "absences", groupe: "equipe", label: L("Absence (h)", "Absences (h)"), get: absences, dec: 0, table: true },
+      { id: "referents", groupe: "confreres", label: L("Referral support (0–100)", "Soutien des référents (0–100)"), get: (r) => r.social.after.referralSupport, dec: 1, table: true },
+      { id: "prets", groupe: "confreres", label: L("Ready, staffed services", "Services prêts et dotés"), get: (r) => r.operational.readyServices, dec: 0, table: true, ref: goals.services?.value ?? null },
+      { id: "carboneCas", groupe: "carbone", label: L("Carbon per case (kgCO₂e)", "Carbone par cas (kgCO₂e)"), get: (r) => r.carbon.perCase, dec: 2, table: true, ref: base ? base * (1 - carbonTarget(clinic)) : null },
+      { id: "carbone", groupe: "carbone", label: L("Carbon footprint (tCO₂e)", "Empreinte carbone (tCO₂e)"), get: (r) => r.carbon.total, dec: 2, table: true }
+    ];
+  }
+  // The groups follow the clinic's promises: whose promise a graph speaks to, and its ✓/✗ each year.
+  const GROUPES_EVO = () => [
+    { id: "argent", nom: L("Money", "L’argent"), qui: "bank", graphes: [["net"], ["tresorerie"], ["recettes", "couts"]] },
+    { id: "clients", nom: L("Clients and access", "Les clients et l’accès"), qui: "clients", graphes: [["servi"], ["confiance"], ["foyers"]] },
+    { id: "equipe", nom: L("The team", "L’équipe"), qui: "team", graphes: [["climat"], ["charge"], ["heuresSup"], ["absences"]] },
+    { id: "confreres", nom: L("Colleagues", "Les confrères"), qui: "peers", graphes: [["referents"], ["prets"]] },
+    { id: "carbone", nom: L("Municipality and carbon", "La commune et le carbone"), qui: "commune", graphes: [["carboneCas"], ["carbone"]] },
+    { id: "activite", nom: L("Activity", "L’activité"), qui: null, graphes: [["cas", "demandes"]] }
+  ];
+  const valeurCopiee = (v, dec) => (Number.isFinite(v) ? (dec ? (+v).toFixed(dec) : String(Math.round(v))) : "");
+  const valeurAffichee = (v, dec) => (Number.isFinite(v) ? (dec ? decimal(v, dec) : number(Math.round(v))) : "—");
+
+  // One small graph: one point per year played, the first and last values written, the promise as
+  // a reference line or band, ✓/✗ under each year, and the chosen year marked on every graph.
+  function petitGraphe(ids, reports, qui, options = {}) {
+    const defs = ids.map((id) => indicateurs().find((x) => x.id === id)).filter(Boolean);
+    const W = 340, H = 176, g = 16, d = 16, haut = 18, bas = qui ? 40 : 24;
+    const n = reports.length;
+    const xs = (i) => (n === 1 ? (g + W - d) / 2 : g + i * ((W - g - d) / (n - 1)));
+    const series = defs.map((def) => reports.map((r) => def.get(r)));
+    const normalise = options.normalise;
+    const plages = series.map((s, k) => { const v = s.filter(Number.isFinite); const ref = defs[k].ref != null ? [defs[k].ref] : []; const bande = defs[k].bande || []; let lo = Math.min(...v, ...ref, ...bande), hi = Math.max(...v, ...ref, ...bande); if (lo === hi) { lo -= 1; hi += 1; } const m = (hi - lo) * .12; return [lo - m, hi + m]; });
+    const commun = normalise ? null : [Math.min(...plages.map((p) => p[0])), Math.max(...plages.map((p) => p[1]))];
+    const ys = (v, k) => { const [lo, hi] = normalise ? plages[k] : commun; return haut + (1 - (v - lo) / (hi - lo)) * (H - haut - bas); };
+    const styles = ["", "6 4", "2 3"];
+    const def0 = defs[0];
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escapeHtml(defs.map((x) => x.label).join(" · "))}">`;
+    if (!normalise) {
+      if (def0.bande) { const y1 = ys(def0.bande[1], 0), y2 = ys(def0.bande[0], 0); svg += `<rect class="evo-bande" x="${g}" y="${y1.toFixed(1)}" width="${W - g - d}" height="${(y2 - y1).toFixed(1)}"></rect>`; }
+      if (def0.ref != null) { const y = ys(def0.ref, 0); svg += `<line class="evo-ref" x1="${g}" x2="${W - d}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"></line><text class="evo-ref-t" x="${g}" y="${(y + 12).toFixed(1)}" text-anchor="start">${escapeHtml(def0.id === "net" || def0.id === "tresorerie" ? "0" : L("promise", "promesse"))}</text>`; }
+    }
+    reports.forEach((r, i) => { svg += `<text class="evo-annee" x="${xs(i).toFixed(1)}" y="${(H - bas + 13).toFixed(1)}" text-anchor="middle">${r.turn}</text>`; });
+    if (qui) reports.forEach((r, i) => { const c = (r.commitments || []).find((x) => x.id === qui); if (c) svg += `<text class="evo-promesse ${c.ok ? "ok" : "ko"}" x="${xs(i).toFixed(1)}" y="${(H - bas + 28).toFixed(1)}" text-anchor="middle">${c.ok ? "✓" : "✗"}</text>`; });
+    const choisie = reports.findIndex((r) => r.turn === ui.evoAnnee);
+    if (choisie >= 0) svg += `<line class="evo-curseur" x1="${xs(choisie).toFixed(1)}" x2="${xs(choisie).toFixed(1)}" y1="${haut - 6}" y2="${H - bas + 2}"></line>`;
+    series.forEach((s, k) => {
+      const pts = s.map((v, i) => (Number.isFinite(v) ? [xs(i), ys(v, k)] : null)).filter(Boolean);
+      if (pts.length > 1) svg += `<polyline class="evo-ligne l${k}" points="${pts.map((p) => p.map((c) => c.toFixed(1)).join(",")).join(" ")}" ${styles[k] ? `stroke-dasharray="${styles[k]}"` : ""}></polyline>`;
+      s.forEach((v, i) => { if (Number.isFinite(v)) svg += `<circle class="evo-point l${k}${i === choisie ? " choisi" : ""}" data-n="${i}" cx="${xs(i).toFixed(1)}" cy="${ys(v, k).toFixed(1)}" r="${i === choisie ? 5 : 3.5}"></circle>`; });
+      // The first and last values, written beside their points; the chosen year's, above it.
+      const ecrit = (i, ancre, dx) => { const v = s[i]; if (!Number.isFinite(v)) return ""; return `<text class="evo-val l${k}" x="${(xs(i) + dx).toFixed(1)}" y="${(ys(v, k) - 7).toFixed(1)}" text-anchor="${ancre}">${escapeHtml(valeurAffichee(v, defs[k].dec > 1 ? 1 : defs[k].dec))}</text>`; };
+      if (choisie >= 0) svg += ecrit(choisie, "middle", 0);
+      else { svg += ecrit(0, n === 1 ? "middle" : "start", 0); if (n > 1) svg += ecrit(n - 1, "end", 0); }
+    });
+    // Each year is a column you can tap: it marks that year on every graph.
+    reports.forEach((r, i) => { const w = n === 1 ? W - g - d : (W - g - d) / (n - 1); svg += `<rect class="evo-cible" data-evo-annee="${r.turn}" x="${(xs(i) - w / 2).toFixed(1)}" y="0" width="${w.toFixed(1)}" height="${H}"><title>${escapeHtml(L(`Year ${r.turn}`, `Année ${r.turn}`))}</title></rect>`; });
+    svg += `</svg>`;
+    const plage = (k) => { const v = series[k].filter(Number.isFinite); const d2 = defs[k].dec > 1 ? 1 : defs[k].dec; return `${valeurAffichee(Math.min(...v), d2)} → ${valeurAffichee(Math.max(...v), d2)}`; };
+    const legende = defs.length > 1 ? `<ul class="evo-legende">${defs.map((x, k) => `<li><i class="l${k}${styles[k] ? " pointille" : ""}"></i>${escapeHtml(x.label)}${normalise ? ` <small>${escapeHtml(plage(k))}</small>` : ""}</li>`).join("")}</ul>` : "";
+    return `<figure class="evo-graphe"><figcaption>${escapeHtml(defs.length > 1 ? defs.map((x, k) => { const nom = x.label.replace(/ \(.*\)$/, ""); return k ? nom.charAt(0).toLowerCase() + nom.slice(1) : nom; }).join(L(" and ", " et ")) : def0.label)}</figcaption>${svg}${legende}</figure>`;
+  }
+
+  function renderEvolution(reports, grand = false) {
+    if (!reports.length) return `<section class="card-section evolution"><h2>${escapeHtml(L("How the clinic has evolved", "L’évolution de la clinique"))}</h2><p class="muted">${escapeHtml(L("Pass a year to see the evolution.", "Passez une année pour voir l’évolution."))}</p></section>`;
+    const groupes = GROUPES_EVO();
+    const filtre = ui.evoGroupe || "tout";
+    const choix = [["tout", L("All", "Tout")], ...groupes.map((x) => [x.id, x.nom])];
+    const tous = indicateurs().filter((x) => x.id !== "couts");
+    const comparer = (ui.evoComparer || []).filter((id) => tous.some((x) => x.id === id));
+    const annee = reports.find((r) => r.turn === ui.evoAnnee);
+    return `<section class="card-section evolution">
+      <div class="panel-heading"><div><h2>${escapeHtml(L("How the clinic has evolved", "L’évolution de la clinique"))}</h2><p>${escapeHtml(L("One point per year played. Tap a year: it is marked on every graph. ✓/✗: the promise kept or missed that year.", "Un point par année jouée. Touchez une année : elle est marquée sur tous les graphes. ✓/✗ : la promesse tenue ou manquée cette année-là."))}</p></div>${grand ? "" : `<button class="button secondary" data-grand="evolution">⤢ ${escapeHtml(L("Open large", "Ouvrir en grand"))}</button>`}</div>
+      <div class="evo-filtres" role="group" aria-label="${escapeHtml(L("Show", "Afficher"))}">${choix.map(([id, nom]) => `<button class="${filtre === id ? "active" : ""}" aria-pressed="${filtre === id}" data-evo-groupe="${id}">${escapeHtml(nom)}</button>`).join("")}</div>
+      ${annee ? `<p class="evo-choisie"><strong>${escapeHtml(L(`Year ${annee.turn}`, `Année ${annee.turn}`))}</strong> · <button class="text-button" data-evo-annee="">${escapeHtml(L("clear", "effacer"))}</button></p>` : ""}
+      ${groupes.filter((x) => filtre === "tout" || filtre === x.id).map((grp) => `<div class="evo-groupe"><h3>${escapeHtml(grp.nom)}</h3><div class="evo-grille">${grp.graphes.map((ids) => petitGraphe(ids, reports, grp.qui)).join("")}</div></div>`).join("")}
+      <details class="evo-comparer" ${comparer.length ? "open" : ""}><summary>${escapeHtml(L("Compare two or three indicators", "Comparer deux ou trois indicateurs"))}</summary>
+        <p class="muted">${escapeHtml(L("Each line keeps its own scale (its range is under the graph): what compares is the direction, year after year.", "Chaque ligne garde sa propre échelle (sa plage est sous le graphe) : ce qui se compare, c’est le sens, année après année."))}</p>
+        <div class="evo-choix">${tous.map((x) => `<label><input type="checkbox" data-evo-comparer="${x.id}" ${comparer.includes(x.id) ? "checked" : ""} ${!comparer.includes(x.id) && comparer.length >= 3 ? "disabled" : ""}> ${escapeHtml(x.label)}</label>`).join("")}</div>
+        ${comparer.length >= 2 ? `<div class="evo-grille un">${petitGraphe(comparer, reports, null, { normalise: true })}</div>` : ""}
+      </details>
+    </section>`;
+  }
+
+  function anneesTSV(reports, planned) {
+    const lignes = indicateurs().filter((x) => x.table);
+    const entete = [L("Indicator", "Indicateur"), ...reports.map((r) => L(`Year ${r.turn}`, `Année ${r.turn}`)), ...(planned ? [L(`Year ${planned.turn}, planned`, `Année ${planned.turn}, prévue`)] : [])];
+    return [entete, ...lignes.map((x) => [x.label, ...reports.map((r) => valeurCopiee(x.get(r), x.dec)), ...(planned ? [valeurCopiee(x.get(planned), x.dec)] : [])])];
+  }
+  function renderAnneesTable(reports, planned, grand = false) {
+    const t = anneesTSV(reports, planned);
+    const groupes = Object.fromEntries(GROUPES_EVO().map((x) => [x.id, x.nom]));
+    const defs = indicateurs().filter((x) => x.table);
+    let dernier = null;
+    return `<section class="card-section annees">
+      <div class="panel-heading"><div><h2>${escapeHtml(L("Every year, side by side", "Toutes les années, côte à côte"))}</h2><p>${escapeHtml(L("Copy the table into a spreadsheet to do your own calculations. The last column is this year as planned.", "Copiez le tableau dans un tableur pour faire vos propres calculs. La dernière colonne est l’année en cours, telle que prévue."))}</p></div></div>
+      <div class="table-actions"><button class="button primary" data-copier="annees">${escapeHtml(L("Copy the table", "Copier le tableau"))}</button><button class="button secondary" data-csv="annees">${escapeHtml(L("Download (CSV)", "Télécharger (CSV)"))}</button>${grand ? "" : `<button class="button secondary" data-grand="annees">⤢ ${escapeHtml(L("Open large", "Ouvrir en grand"))}</button>`}</div>
+      <div class="table-wrap"><table class="annees-table"><thead><tr>${t[0].map((c, i) => `<th class="${i === t[0].length - 1 && planned ? "prevue" : ""}">${escapeHtml(c)}</th>`).join("")}</tr></thead><tbody>${t.slice(1).map((ligne, k) => { const grp = defs[k].groupe; const titre = grp !== dernier ? `<tr class="groupe"><th colspan="${t[0].length}">${escapeHtml(groupes[grp] || "")}</th></tr>` : ""; dernier = grp; return `${titre}<tr>${ligne.map((c, i) => (i ? `<td class="${i === ligne.length - 1 && planned ? "prevue" : ""}">${escapeHtml(c)}</td>` : `<th>${escapeHtml(c)}</th>`)).join("")}</tr>`; }).join("")}</tbody></table></div>
+    </section>`;
+  }
+
+  // What each service costs and brings, for one year: this year as planned, or any year played.
+  // One column per open service and one for the whole clinic, one row per measure — read down a
+  // column for a service, across a row to compare services.
+  function anneeServices(planned, forecast) {
+    const choix = ui.servicesAnnee ?? "prevu";
+    const passe = choix === "prevu" ? null : state.history.find((r) => String(r.turn) === String(choix));
+    return passe ? { choix, report: passe, clinic: passe.clinicSnapshot || planned } : { choix: "prevu", report: { ...forecast, turn: state.year }, clinic: planned };
+  }
+  function servicesTSV(report, clinic) {
+    const lignes = (report.serviceResults || []).filter((x) => x.active && (x.honored > 0 || x.demand > 0));
+    const fin = report.financial;
+    const cas = lignes.reduce((t, x) => t + x.honored, 0), recettes = lignes.reduce((t, x) => t + x.revenue, 0);
+    // The model's own times and margin: the base duration moved by pace, returns, a tired team and
+    // drop-off; the margin after returns and the waste protocol. Older saved years lack the fields.
+    const salle = (x) => x.roomDuration ?? (SERVICE_BY_ID[x.id]?.roomIds?.length ? caseDuration(SERVICE_BY_ID[x.id], clinic) : 0);
+    const marge = (x) => x.margeReelle ?? x.contributionPerCase;
+    const parHeure = (x, h) => (h > 0 ? marge(x) / h : null);
+    const causes = (x) => (x.lostBy || []).filter((l) => l.count > 0).map((l) => `${blockerText(l.reason)} ${l.count}`).join(" · ");
+    const mesures = [
+      [L("Cases treated", "Cas traités"), 0, (x) => x.honored, cas],
+      [L("Requests", "Demandes"), 0, (x) => x.demand, lignes.reduce((t, x) => t + x.demand, 0)],
+      [L("Refused", "Refusées"), 0, (x) => Math.max(0, x.demand - x.honored), lignes.reduce((t, x) => t + Math.max(0, x.demand - x.honored), 0)],
+      [L("Refused, by cause", "Refusées, par cause"), null, causes, ""],
+      [L("Price (€)", "Prix (€)"), 2, (x) => x.price, null],
+      [L("Revenue (€)", "Recettes (€)"), 0, (x) => x.revenue, recettes],
+      [L("Supplies per case (€)", "Fournitures par cas (€)"), 2, (x) => SERVICE_BY_ID[x.id]?.supplyCost ?? 0, null],
+      [L("Variable costs (€)", "Coûts variables (€)"), 0, (x) => x.variableCosts, fin.variableCosts],
+      [L("Margin per case (€)", "Marge par cas (€)"), 2, marge, cas ? (recettes - fin.variableCosts) / cas : null],
+      [L("Total margin (€)", "Marge totale (€)"), 0, (x) => x.revenue - x.variableCosts, recettes - fin.variableCosts],
+      [L("Vet hours per case", "Heures vétérinaire par cas"), 2, (x) => x.vetDuration, null],
+      [L("Margin per vet hour (€)", "Marge par heure vétérinaire (€)"), 0, (x) => parHeure(x, x.vetDuration), null],
+      [L("Support hours per case", "Heures de soutien par cas"), 2, (x) => x.supportDuration, null],
+      [L("Margin per support hour (€)", "Marge par heure de soutien (€)"), 0, (x) => parHeure(x, x.supportDuration), null],
+      [L("Room hours per case", "Heures de salle par cas"), 2, salle, null],
+      [L("Margin per room hour (€)", "Marge par heure de salle (€)"), 0, (x) => parHeure(x, salle(x)), null],
+      [L("First year open", "Première année d’ouverture"), null, (x) => (x.rampUp ? L("yes: 60 % of demand", "oui : 60 % de la demande") : ""), ""]
+    ];
+    return { entete: [L("Measure", "Mesure"), ...lignes.map((x) => serviceName(x.id)), L("Whole clinic", "Toute la clinique")], mesures: mesures.map(([nom, dec, get, total]) => ({ nom, dec, valeurs: [...lignes.map(get), total] })), ecartStock: fin.variableCosts - lignes.reduce((t, x) => t + x.variableCosts, 0), vide: !lignes.length };
+  }
+  function renderServicesTab(planned, forecast, grand = false) {
+    const { choix, report, clinic } = anneeServices(planned, forecast);
+    const { entete, mesures, ecartStock, vide } = servicesTSV(report, clinic);
+    const cell = (v, dec) => (typeof v === "number" && Number.isFinite(v) ? (dec ? decimal(v, dec) : number(v)) : v ? escapeHtml(v) : "—");
+    const options = [["prevu", L(`Year ${state.year}, planned`, `Année ${state.year}, prévue`)], ...state.history.slice().reverse().map((r) => [String(r.turn), L(`Year ${r.turn}`, `Année ${r.turn}`)])];
+    return `<section class="card-section services-detail">
+      <div class="panel-heading"><div><h2>${escapeHtml(L("What each service costs and brings", "Ce que chaque service coûte et rapporte"))}</h2><p>${escapeHtml(L("Fixed costs (salaries, rent) are not split by service: the margin is what each service brings to pay them. Per hour, the margin says where the scarce time pays best.", "Les coûts fixes (salaires, loyer) ne se répartissent pas par service : la marge est ce que chaque service apporte pour les payer. Par heure, la marge dit où le temps rare rapporte le plus."))}</p></div></div>
+      <div class="table-actions"><label class="annee-choix"><span>${escapeHtml(L("Year", "Année"))}</span><select data-services-annee>${options.map(([v, l]) => `<option value="${v}" ${choix === v ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select></label><button class="button primary" data-copier="services">${escapeHtml(L("Copy the table", "Copier le tableau"))}</button>${grand ? "" : `<button class="button secondary" data-grand="services">⤢ ${escapeHtml(L("Open large", "Ouvrir en grand"))}</button>`}</div>
+      ${choix === "prevu" ? forecastGridNote() : ""}
+      ${vide ? `<p class="muted">${escapeHtml(L("No service treated a case this year.", "Aucun service n’a traité de cas cette année."))}</p>` : `<div class="table-wrap"><table class="services-table"><thead><tr>${entete.map((c, i) => `<th class="${i === entete.length - 1 ? "total" : ""}">${escapeHtml(c)}</th>`).join("")}</tr></thead><tbody>${mesures.map((m) => `<tr><th>${escapeHtml(m.nom)}</th>${m.valeurs.map((v, i) => `<td class="${i === m.valeurs.length - 1 ? "total" : ""}">${cell(v, m.dec)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      ${Math.abs(ecartStock) >= 1 ? `<p class="muted">${escapeHtml(L(`The whole clinic’s variable costs include the stock strategy (${money(ecartStock)}), which is not split by service.`, `Les coûts variables de toute la clinique comprennent la stratégie de stock (${money(ecartStock)}), qui ne se répartit pas par service.`))}</p>` : ""}`}
+    </section>`;
+  }
+  // The text a « Copy » button puts on the clipboard: tab-separated, plain numbers.
+  function tableauCopie(id) {
+    const forecast = simulatePlan(pendingActions());
+    if (id === "annees") return anneesTSV(state.history, { ...forecast, turn: state.year });
+    const { report, clinic } = anneeServices(plannedState(), forecast);
+    const { entete, mesures } = servicesTSV(report, clinic);
+    return [entete, ...mesures.map((m) => [m.nom, ...m.valeurs.map((v) => (typeof v === "number" ? valeurCopiee(v, m.dec || 0) : String(v ?? "")))])];
+  }
+  const enTSV = (t) => t.map((r) => r.join("\t")).join("\n");
+  const enCSV = (t) => t.map((r) => r.map((c) => (/[",;\n]/.test(c) ? `"${String(c).replace(/"/g, '""')}"` : c)).join(";")).join("\n");
+
+  function renderGestionTabs() {
+    const tab = ui.gestionTab || "annee";
+    const tabs = [["annee", L("This year", "Cette année")], ["annees", L("The years", "Les années")], ["parservice", L("The services", "Les services")]];
+    return `<div class="gestion-tabs" role="tablist" aria-label="${escapeHtml(L("Business", "Gestion"))}">${tabs.map(([id, label]) => `<button role="tab" aria-selected="${id === tab}" class="${id === tab ? "active" : ""}" data-gestion-tab="${id}">${escapeHtml(label)}</button>`).join("")}</div>`;
+  }
+  // The large window: a table or the graphs, near full screen.
+  function renderGrand(planned, forecast) {
+    if (!ui.grand) return "";
+    const corps = ui.grand === "annees" ? renderAnneesTable(state.history, { ...forecast, turn: state.year }, true) : ui.grand === "services" ? renderServicesTab(planned, forecast, true) : renderEvolution(state.history, true);
+    return `<div class="modal-backdrop grand-fond" data-fermer-grand><section class="modal grand" role="dialog" aria-modal="true" aria-label="${escapeHtml(L("Large view", "Vue en grand"))}"><button class="grand-fermer" data-fermer-grand aria-label="${escapeHtml(t("app.close"))}">×</button>${corps}</section></div>`;
+  }
+
   function renderBusiness(planned, forecast) {
     const location = D.locations[planned.location.sectorId];
-    return `<section class="page"><div class="page-heading"><div><h1>${escapeHtml(L("Business", "Gestion"))}</h1><p>${escapeHtml(L("Prices, financing, market position, and location—opened one decision at a time.", "Prix, financement, marché et implantation — une décision à la fois."))}</p></div></div>
+    const tab = GESTION_TABS.includes(ui.gestionTab) ? ui.gestionTab : "annee";
+    const tete = `<div class="page-heading"><div><h1>${escapeHtml(L("Business", "Gestion"))}</h1><p>${escapeHtml(L("This year’s accounts and decisions; every year side by side; what each service costs and brings.", "Les comptes et décisions de l’année ; toutes les années côte à côte ; ce que chaque service coûte et rapporte."))}</p></div></div>${renderGestionTabs()}`;
+    if (tab === "annees") return `<section class="page">${tete}${renderEvolution(state.history)}${renderAnneesTable(state.history, { ...forecast, turn: state.year })}</section>`;
+    if (tab === "parservice") return `<section class="page">${tete}${renderServicesTab(planned, forecast)}</section>`;
+    return `<section class="page">${tete}
       ${forecastGridNote()}
       ${forecastPrecision() === "costs" ? "" : moneyBar(forecast)}<div class="dashboard-grid compact-two">${metricCard(L("Net result", "Résultat net"), forecastText(forecast.financial.netResult, "money"), forecastText(forecast.financial.margin, "percent"), forecast.financial.netResult >= 0 ? "good" : "bad")}${metricCard(L("End treasury", "Trésorerie finale"), forecastText(forecast.financial.treasury, "money"))}</div>
-      <section class="card-section action-menu"><button data-open-drawer="pricing"><span>${escapeHtml(L("Service prices", "Prix des services"))}</span><strong>${escapeHtml(L(`Your clients: ${itemLabel(D.segments[planned.marketFocus].name)} · accepted prices and sensitivity`, `Vos clients : ${itemLabel(D.segments[planned.marketFocus].name)} · prix acceptés et sensibilité`))}</strong><em>›</em></button><button data-open-drawer="finance"><span>${escapeHtml(L("Financing", "Financement"))}</span><strong>${escapeHtml(planned.finance.loan ? money(planned.finance.loan.remaining) : L("No outstanding loan", "Aucun emprunt"))}</strong><em>›</em></button><button data-open-drawer="market"><span>${escapeHtml(L("Market focus", "Marché cible"))}</span><strong>${escapeHtml(itemLabel(D.segments[planned.marketFocus].name))}</strong><em>›</em></button><button data-open-drawer="location"><span>${escapeHtml(L("Location and parking", "Implantation et parking"))}</span><strong>${escapeHtml(itemLabel(location.name))}</strong><em>›</em></button><button data-open-drawer="marketing"><span>${escapeHtml(L("Communication and market study", "Communication et étude de marché"))}</span><strong>${escapeHtml(`${itemLabel(D.marketingStrategies.communication[planned.marketing.communication]?.name || { en: "", fr: "" })} · ${itemLabel((D.marketingStrategies.geomarketing[planned.marketing.geomarketing] || D.marketingStrategies.geomarketing.none).name)}`)}</strong><em>›</em></button></section>
+      ${renderCompteResultat(forecast)}${renderAssocies(planned)}
+      <section class="card-section action-menu"><button data-gestion-tab="parservice"><span>${escapeHtml(L("What each service costs and brings", "Ce que chaque service coûte et rapporte"))}</span><strong>${escapeHtml(L("Cases, prices, supplies, margin per case and per hour — any year", "Cas, prix, fournitures, marge par cas et par heure — n’importe quelle année"))}</strong><em>›</em></button><button data-open-drawer="pricing"><span>${escapeHtml(L("Service prices", "Prix des services"))}</span><strong>${escapeHtml(L(`Your clients: ${itemLabel(D.segments[planned.marketFocus].name)} · accepted prices and sensitivity`, `Vos clients : ${itemLabel(D.segments[planned.marketFocus].name)} · prix acceptés et sensibilité`))}</strong><em>›</em></button><button data-open-drawer="finance"><span>${escapeHtml(L("Financing", "Financement"))}</span><strong>${escapeHtml(planned.finance.loan ? money(planned.finance.loan.remaining) : L("No outstanding loan", "Aucun emprunt"))}</strong><em>›</em></button><button data-open-drawer="market"><span>${escapeHtml(L("Market focus", "Marché cible"))}</span><strong>${escapeHtml(itemLabel(D.segments[planned.marketFocus].name))}</strong><em>›</em></button><button data-open-drawer="location"><span>${escapeHtml(L("Location and parking", "Implantation et parking"))}</span><strong>${escapeHtml(itemLabel(location.name))}</strong><em>›</em></button><button data-open-drawer="marketing"><span>${escapeHtml(L("Communication and market study", "Communication et étude de marché"))}</span><strong>${escapeHtml(`${itemLabel(D.marketingStrategies.communication[planned.marketing.communication]?.name || { en: "", fr: "" })} · ${itemLabel((D.marketingStrategies.geomarketing[planned.marketing.geomarketing] || D.marketingStrategies.geomarketing.none).name)}`)}</strong><em>›</em></button></section>
     </section>`;
   }
 
@@ -3203,8 +4314,13 @@
   function renderStaffPersonDrawer(planned) {
     const person = planned.staff.find((item) => item.id === ui.drawerContext);
     if (!person) return "";
+    if (person.gerant) {
+      const d = ui.decisionDrafts[`manager-pay:${person.id}`] ?? person.salary;
+      const seuil = D.financeModel.taxReducedMinPay;
+      return `<div class="staff-editor"><h3>${escapeHtml(person.name)} · ${escapeHtml(L("manager", "gérante"))}</h3><p>${escapeHtml(L("She runs the clinic’s company as a self-employed manager. You, the owners, decide what she takes each year. It is a cost for the company, with her self-employed contributions; it does not change the team’s climate.", "Elle dirige la société de la clinique comme gérante indépendante. Vous, les associés, décidez de ce qu’elle prend chaque année. C’est une charge pour la société, avec ses cotisations d’indépendante ; cela ne change pas le climat de l’équipe."))}</p><div class="form-stack"><label><span>${escapeHtml(L("Manager’s pay (per year)", "Rémunération du gérant (par an)"))}</span><input type="number" min="0" max="${MANAGER_PAY_MAX}" step="1000" value="${d}" data-draft-salary data-draft-key="manager-pay:${person.id}"></label><small>${escapeHtml(L(`Self-employed contributions: ${pct(D.financeModel.managerContributionRate)} up to ${money(D.financeModel.managerContributionCap)}.`, `Cotisations d’indépendant : ${pct(D.financeModel.managerContributionRate)} jusqu’à ${money(D.financeModel.managerContributionCap)}.`))}${seuil > 0 ? ` ${escapeHtml(L(`From ${money(seuil)}, the company keeps the reduced tax rate (${pct(D.financeModel.taxReducedRate)} on its first ${money(D.financeModel.taxReducedBand)} of profit).`, `À partir de ${money(seuil)}, la société garde le taux d’impôt réduit (${pct(D.financeModel.taxReducedRate)} sur ses premiers ${money(D.financeModel.taxReducedBand)} de bénéfice).`))}` : ""}</small><button class="button primary" data-review-salary="${person.id}">${escapeHtml(L("Review the manager’s pay", "Examiner la rémunération du gérant"))}</button></div></div>`;
+    }
     const draft = ui.decisionDrafts[`salary:${person.id}`] ?? person.salary;
-    return `<div class="staff-editor"><h3>${escapeHtml(person.name)}</h3><p>${escapeHtml(L("Salary changes payroll, available work hours, and staff climate. Time allocation is managed separately.", "Le salaire modifie la masse salariale, les heures de travail disponibles et le climat de l’équipe. L’affectation du temps se gère séparément."))}</p><div class="form-stack"><label><span>${escapeHtml(L("Annual salary", "Salaire annuel"))}</span><input type="number" min="${Math.round(person.baseSalary * .8)}" max="${Math.round(person.baseSalary * 1.3)}" step="500" value="${draft}" data-draft-salary data-draft-key="salary:${person.id}"></label><small>${escapeHtml(L("Benchmark salary", "Salaire de référence"))}: ${money(person.baseSalary)}</small><button class="button primary" data-review-salary="${person.id}">${escapeHtml(L("Review salary change", "Examiner le changement de salaire"))}</button></div></div>`;
+    return `<div class="staff-editor"><h3>${escapeHtml(person.name)}</h3><p>${escapeHtml(L("Salary changes payroll, available work hours, and staff climate. Time allocation is managed separately.", "Le salaire modifie la masse salariale, les heures de travail disponibles et le climat de l’équipe. L’affectation du temps se gère séparément."))}</p><div class="form-stack"><label><span>${escapeHtml(L("Annual salary", "Salaire annuel"))}</span><input type="number" min="${Math.round(person.baseSalary * .8)}" max="${Math.round(person.baseSalary * 1.3)}" step="500" value="${draft}" data-draft-salary data-draft-key="salary:${person.id}"></label><small>${escapeHtml(L("Benchmark salary", "Salaire de référence"))}: ${money(person.baseSalary)}</small><small>${escapeHtml(L(`Cost to the clinic: ${money(person.salary)} + ${pct(D.financeModel.socialChargeRate)} employer charges = ${money(person.salary * (1 + D.financeModel.socialChargeRate))} a year, ${money(person.salary * (1 + D.financeModel.socialChargeRate) / Math.max(1, person.capacity))} per hour available.`, `Coût pour la clinique : ${money(person.salary)} + ${pct(D.financeModel.socialChargeRate)} de charges patronales = ${money(person.salary * (1 + D.financeModel.socialChargeRate))} par an, ${money(person.salary * (1 + D.financeModel.socialChargeRate) / Math.max(1, person.capacity))} par heure disponible.`))}</small><button class="button primary" data-review-salary="${person.id}">${escapeHtml(L("Review salary change", "Examiner le changement de salaire"))}</button></div></div>`;
   }
 
   // Every service on one screen, grouped by family; the chosen one expands in place.
@@ -3221,23 +4337,39 @@
     return `<p>${escapeHtml(L("Select one service to see its requirements and consequences.", "Sélectionnez un service pour voir ses conditions et ses conséquences."))}</p><div class="service-list">${groups.map(([id, label, ids]) => `<section class="service-family" data-family="${id}"><h3>${escapeHtml(label)} <small>${escapeHtml(plural(ids.length, L("service", "service"), L("services", "services")))}</small></h3>${ids.map((serviceId) => { const row = forecast.serviceResults.find((item) => item.id === serviceId); const [tone, chip] = serviceChip(row); const open = serviceId === selectedId; return `<button class="service-row ${open ? "open" : ""}" data-select-service="${serviceId}" aria-expanded="${open}"><strong>${escapeHtml(serviceName(serviceId))}</strong><em class="status-word ${tone}">${escapeHtml(chip)}</em><span>${escapeHtml(plural(row.demand, L("request", "demande"), L("requests", "demandes")))}</span><span>${money(planned.services[serviceId].price)}</span><em aria-hidden="true">${open ? "▾" : "›"}</em></button>${open ? renderServiceDetail(planned, forecast, serviceId, order) : ""}`; }).join("")}</section>`).join("")}</div>`;
   }
 
+  // The time per case the model uses is the base duration at the chosen pace, moved by three things;
+  // the card names each one present, with its size, so a student's own division lands on the model's.
+  function tempsAjuste(service, clinic) {
+    const parts = [];
+    const lent = tiredSlowdown(clinic);
+    const retours = servicePace(clinic, service.id).returnRate || 0;
+    if (lent > 0) parts.push(L(`tired team +${decimal(lent * 100, 1)} %`, `équipe fatiguée +${decimal(lent * 100, 1)} %`));
+    if (retours > 0) parts.push(L(`unpaid returns +${decimal(retours * 100, 0)} %`, `retours non payés +${decimal(retours * 100, 0)} %`));
+    if (dropoffActive(clinic) && DROPOFF_SERVICES.has(service.id)) parts.push(L(`drop-off: vet −10 %, support +10 %, room ×${decimal(D.operationsModel.dropoffRoomFactor, 1)}`, `dépôt : vétérinaire −10 %, soutien +10 %, salle ×${decimal(D.operationsModel.dropoffRoomFactor, 1)}`));
+    return parts.length ? `<div><span>${escapeHtml(L(`Base time at this pace: ${decimal(caseDuration(service, clinic), 2)} h`, `Temps de base à ce rythme : ${decimal(caseDuration(service, clinic), 2)} h`))}</span><strong>${escapeHtml(parts.join(" · "))}</strong></div>` : "";
+  }
+
   function renderServiceDetail(planned, forecast, selectedId, order) {
     const service = SERVICE_BY_ID[selectedId];
     const row = forecast.serviceResults.find((item) => item.id === selectedId);
     const active = planned.services[selectedId].active;
     const payload = { kind: "toggle-service", targetId: selectedId, value: !active };
     const next = order[(order.indexOf(selectedId) + 1) % order.length];
-    return `<article class="selected-service"><div class="card-status"><h3>${escapeHtml(serviceName(selectedId))}</h3><span>${escapeHtml(active ? L("Open", "Ouvert") : L("Closed", "Fermé"))}</span></div><div class="service-stats"><div><span>${escapeHtml(L("Expected requests", "Demandes prévues"))}</span><strong>${number(row.demand)}</strong></div><div><span>${escapeHtml(L("Current price", "Prix actuel"))}</span><strong>${money(planned.services[selectedId].price)}</strong><button class="text-button" data-open-drawer="pricing">${escapeHtml(L("Change prices", "Modifier les prix"))} ›</button></div><div><span>${escapeHtml(L("Money left after direct supplies", "Argent restant après les fournitures directes"))}</span><strong>${money(row.contributionPerCase)} · ${escapeHtml(L(`supplies ${pct(service.variableCost)}`, `fournitures ${pct(service.variableCost)}`))}</strong></div>${(() => { const v = vetDuration(service, planned), su = supportDuration(service, planned), tot = v + su || 1; return `<div class="case-split"><span>${escapeHtml(L("One case", "Un cas"))}</span><div class="cs-track">${v > 0 ? `<i class="cs-vet" style="width:${(v / tot * 100).toFixed(1)}%"></i>` : ""}${su > 0 ? `<i class="cs-support" style="width:${(su / tot * 100).toFixed(1)}%"></i>` : ""}</div><ul class="hb-legend"><li><b class="cs-vet"></b>${escapeHtml(L("Vet time per case", "Temps vétérinaire par cas"))} <strong>${decimal(v, 2)} h</strong></li><li><b class="cs-support"></b>${escapeHtml(L("Support time per case", "Temps de soutien par cas"))} <strong>${decimal(su, 2)} h</strong></li>${su > 0 ? `<li><small>${escapeHtml(L(`a vet can do the whole case: ${decimal(v + su, 2)} h of vet time`, `un vétérinaire peut faire tout le cas : ${decimal(v + su, 2)} h de temps vétérinaire`))}</small></li>` : ""}</ul></div>`; })()}${service.roomIds.length ? `<div><span>${escapeHtml(L("Room time per case", "Temps de salle par cas"))}</span><strong>${decimal(caseDuration(service, planned), 2)} h · ${escapeHtml(service.roomIds.map((id) => itemLabel(D.rooms[id].name)).join(", "))}</strong></div>` : ""}${row.returnVisits > 0 ? `<div><span>${escapeHtml(L("Return visits from rushed care", "Retours de visites pressées"))}</span><strong>${number(row.returnVisits)} ${escapeHtml(L("cases, unpaid", "cas, non payés"))}</strong></div>` : ""}</div><p class="service-time-note">${escapeHtml(L("Each case uses both at the same time. A vet can cover the support part; support staff cannot cover the vet part. Room time is how long the case occupies its room, whoever treats it.", "Chaque cas consomme les deux en même temps. Un vétérinaire peut assurer la partie soutien ; le personnel de soutien ne peut pas assurer la partie vétérinaire. Le temps de salle est la durée pendant laquelle le cas occupe sa salle, quelle que soit la personne qui le traite."))}</p>${(() => { const staffers = planned.staff.filter((person) => roleCompatible(person, service)); const text = staffers.length ? staffers.map((person) => `${person.name} (${roleLabel(person.role).toLowerCase()}${personQualified(person, service) ? "" : `, ${L("needs training", "formation nécessaire")}`})`).join(", ") : L("Nobody on the current team", "Personne dans l’équipe actuelle"); return `<p class="who-can"><strong>${escapeHtml(L("Who can staff this", "Qui peut assurer ce service"))}:</strong> ${escapeHtml(text)}</p>`; })()}${requirementList(service, planned)}${consequencePreview(`service:${selectedId}:active`, payload)}${reviewButton(`service:${selectedId}:active`, payload, active ? L("Close service", "Fermer le service") : L("Open service", "Ouvrir le service"))}${renderPaceOptions(service, planned)}<button class="text-button next-service" data-select-service="${next}">${escapeHtml(L(`Next service: ${serviceName(next)}`, `Service suivant : ${serviceName(next)}`))} ›</button></article>`;
+    return `<article class="selected-service"><div class="card-status"><h3>${escapeHtml(serviceName(selectedId))}</h3><span>${escapeHtml(active ? L("Open", "Ouvert") : L("Closed", "Fermé"))}</span></div><div class="service-stats"><div><span>${escapeHtml(L("Expected requests", "Demandes prévues"))}</span><strong>${number(row.demand)}</strong></div><div><span>${escapeHtml(L("Current price", "Prix actuel"))}</span><strong>${money(planned.services[selectedId].price)}</strong><button class="text-button" data-open-drawer="pricing">${escapeHtml(L("Change prices", "Modifier les prix"))} ›</button></div><div><span>${escapeHtml(L("Money left after direct supplies", "Argent restant après les fournitures directes"))}</span><strong>${money(row.contributionPerCase)} · ${escapeHtml(L(`supplies ${money(service.supplyCost)} per case`, `fournitures ${money(service.supplyCost)} par cas`))}</strong>${Math.abs(row.margeReelle - row.contributionPerCase) >= .005 ? `<small>${escapeHtml(L(`with unpaid returns and the waste protocol: ${money(row.margeReelle)} per case`, `avec les retours non payés et le protocole déchets : ${money(row.margeReelle)} par cas`))}</small>` : ""}</div>${(() => { const v = row.vetDuration, su = row.supportDuration, tot = v + su || 1; return `<div class="case-split"><span>${escapeHtml(L("One case", "Un cas"))}</span><div class="cs-track">${v > 0 ? `<i class="cs-vet" style="width:${(v / tot * 100).toFixed(1)}%"></i>` : ""}${su > 0 ? `<i class="cs-support" style="width:${(su / tot * 100).toFixed(1)}%"></i>` : ""}</div><ul class="hb-legend"><li><b class="cs-vet"></b>${escapeHtml(L("Vet time per case", "Temps vétérinaire par cas"))} <strong>${decimal(v, 2)} h</strong></li><li><b class="cs-support"></b>${escapeHtml(L("Support time per case", "Temps de soutien par cas"))} <strong>${decimal(su, 2)} h</strong></li>${su > 0 ? `<li><small>${escapeHtml(L(`a vet can do the whole case: ${decimal(v + su, 2)} h of vet time`, `un vétérinaire peut faire tout le cas : ${decimal(v + su, 2)} h de temps vétérinaire`))}</small></li>` : ""}</ul></div>`; })()}${service.roomIds.length ? `<div><span>${escapeHtml(L("Room time per case", "Temps de salle par cas"))}</span><strong>${decimal(row.roomDuration, 2)} h · ${escapeHtml(service.roomIds.map((id) => itemLabel(D.rooms[id].name)).join(", "))}</strong></div>` : ""}${tempsAjuste(service, planned)}${row.returnVisits > 0 ? `<div><span>${escapeHtml(L("Return visits from rushed care", "Retours de visites pressées"))}</span><strong>${number(row.returnVisits)} ${escapeHtml(L("cases, unpaid", "cas, non payés"))}</strong></div>` : ""}</div><p class="service-time-note">${escapeHtml(L("Each case uses both at the same time. A vet can cover the support part; support staff cannot cover the vet part. Room time is how long the case occupies its room, whoever treats it.", "Chaque cas consomme les deux en même temps. Un vétérinaire peut assurer la partie soutien ; le personnel de soutien ne peut pas assurer la partie vétérinaire. Le temps de salle est la durée pendant laquelle le cas occupe sa salle, quelle que soit la personne qui le traite."))}</p>${(() => { const staffers = planned.staff.filter((person) => roleCompatible(person, service)); const text = staffers.length ? staffers.map((person) => `${person.name} (${roleLabel(person.role).toLowerCase()}${personQualified(person, service) ? "" : `, ${L("needs training", "formation nécessaire")}`})`).join(", ") : L("Nobody on the current team", "Personne dans l’équipe actuelle"); return `<p class="who-can"><strong>${escapeHtml(L("Who can staff this", "Qui peut assurer ce service"))}:</strong> ${escapeHtml(text)}</p>`; })()}${requirementList(service, planned)}${consequencePreview(`service:${selectedId}:active`, payload)}${reviewButton(`service:${selectedId}:active`, payload, active ? L("Close service", "Fermer le service") : L("Open service", "Ouvrir le service"))}${renderPaceOptions(service, planned)}<button class="text-button next-service" data-select-service="${next}">${escapeHtml(L(`Next service: ${serviceName(next)}`, `Service suivant : ${serviceName(next)}`))} ›</button></article>`;
   }
 
   function renderPaceOptions(service, planned) {
     const current = planned.services[service.id].pace || "standard";
     const active = planned.services[service.id].active;
-    return `<section class="pace-options"><h4>${escapeHtml(L("Pace: time per appointment", "Rythme : temps par rendez-vous"))}</h4>${active ? "" : `<p class="disabled-note">${escapeHtml(L("Open the service first — pace has no effect while it is closed.", "Ouvrez d’abord le service — le rythme n’a aucun effet tant qu’il est fermé."))}</p>`}${Object.entries(D.servicePaces).map(([id, pace]) => `<article class="${id === current ? "current" : ""}"><div><strong>${escapeHtml(itemLabel(pace.name))} · ${decimal(service.duration * pace.duration, 1)} h</strong><p>${escapeHtml(itemLabel(pace.note))}</p></div>${id === current ? `<span class="status-word good">${escapeHtml(t("common.current"))}</span>` : active ? reviewButton(`service:${service.id}:pace`, { kind: "service-pace", targetId: service.id, value: id }, L("Use this pace", "Adopter ce rythme")) : ""}</article>`).join("")}</section>`;
+    return `<section class="pace-options"><h4>${escapeHtml(L("Pace: time per appointment", "Rythme : temps par rendez-vous"))}</h4>${active ? "" : `<p class="disabled-note">${escapeHtml(L("Open the service first — pace has no effect while it is closed.", "Ouvrez d’abord le service — le rythme n’a aucun effet tant qu’il est fermé."))}</p>`}${Object.entries(D.servicePaces).map(([id, pace]) => `<article class="${id === current ? "current" : ""}"><div><strong>${escapeHtml(itemLabel(pace.name))} · ${decimal(service.duration * pace.duration * (1 + (pace.returnRate || 0)) * (1 + tiredSlowdown(planned)), 2)} h</strong><p>${escapeHtml(itemLabel(pace.note))}</p></div>${id === current ? `<span class="status-word good">${escapeHtml(t("common.current"))}</span>` : active ? reviewButton(`service:${service.id}:pace`, { kind: "service-pace", targetId: service.id, value: id }, L("Use this pace", "Adopter ce rythme")) : ""}</article>`).join("")}</section>`;
   }
 
   function renderDrawerBody(planned, forecast) {
     if (ui.confirm) return renderConfirmation();
+    if (["recruitment", "rooms", "equipment", "finance", "location"].includes(ui.drawer)) { const notice = expansionNotice(); if (notice) return notice + renderDrawerContent(planned, forecast); }
+    return renderDrawerContent(planned, forecast);
+  }
+  function renderDrawerContent(planned, forecast) {
     if (ui.drawer === "recruitment") return renderRecruitmentDrawer(planned);
     if (ui.drawer === "plan") {
       const rows = planRows(simulatePlan([]), forecast);
@@ -3264,7 +4396,7 @@
     // change staff climate or client trust?", so without them the two indicators are read-only.
     if (ui.drawer === "relations") return `<p class="drawer-link"><button class="text-button" data-open-drawer="marketing">${escapeHtml(L("Communication with clients", "Communication avec les clients"))} ›</button></p><div class="drawer-cards">${Object.entries(D.socialActions).map(([id, action]) => optionCard(itemLabel(action.name), itemLabel(action.note), `social:${id}`, { kind: "social-action", targetId: id }, `${money(action.cost)} ${L("once", "une fois")}${action.supportHours ? ` · ${number(action.supportHours)} ${L("support hours", "heures de soutien")}` : ""}`, id)).join("")}</div>`;
     if (ui.drawer === "hr") return `<details class="note-repliee"><summary>${escapeHtml(L("Climate thresholds", "Seuils du climat"))}</summary><p>${escapeHtml(L("Staff climate changes absence and resignations: below 50 people are absent more, below 30 someone resigns at year end, and below 45 anyone paid under 95% of their benchmark resigns. Resignation protection counts as extra climate for those checks.", "Le climat de l’équipe modifie l’absence et les démissions : sous 50 les absences augmentent, sous 30 une personne démissionne en fin d’année, et sous 45 toute personne payée sous 95 % de sa référence démissionne. La protection contre les départs compte comme du climat en plus pour ces seuils."))}</p></details><div class="drawer-cards">${Object.entries(D.hrStrategies).map(([id, choice]) => choiceCard(id === planned.hr.strategy, itemLabel(choice.name), `${pct(choice.absenteeism)} ${L("expected work time lost to absence", "de temps de travail susceptible d’être perdu pour absence")} · ${L("staff climate", "climat de travail")} ${signed(choice.climate)} · ${L("resignation protection", "protection contre les départs")} +${choice.retention || 0}`, "hr:strategy", { kind: "hr-strategy", targetId: id }, `${money(choice.cost)}/${L("year", "an")}`)).join("")}</div>`;
-    if (ui.drawer === "pricing") return `<p><strong>${escapeHtml(L("Your clients", "Vos clients"))}: ${escapeHtml(itemLabel(D.segments[planned.marketFocus].name))}</strong> — ${escapeHtml(L("the price they accept depends on the type of client and on their trust in the clinic.", "le prix qu’ils acceptent dépend du type de clients et de leur confiance dans la clinique."))}</p><details class="note-repliee"><summary>${escapeHtml(L("Price sensitivity", "Sensibilité au prix"))}</summary><p>${escapeHtml(L("Price sensitivity shows how strongly requests may change when the price changes. Only open services are listed: open a service first to price it.", "La sensibilité au prix indique dans quelle mesure les demandes peuvent changer lorsque le prix évolue. Seuls les services ouverts sont listés : ouvrez d’abord un service pour fixer son prix."))}</p></details><div class="price-editor">${D.services.filter((service) => planned.services[service.id].active).map((service) => { const current = ui.decisionDrafts[`price:${service.id}`] ?? planned.services[service.id].price; const accepte = acceptedPrice(service, planned); const known = acceptedKnown(service, planned, accepte); const au_dessus = Number(current) > known.high + .5; return `<article><div><strong>${escapeHtml(serviceName(service.id))}</strong><span class="${au_dessus ? "warn-text" : ""}">${escapeHtml(L("Price your clients accept", "Prix accepté par vos clients"))}: ${escapeHtml(acceptedText(known))}</span>${priceScale(Number(current), known)}<span>${escapeHtml(L("Price sensitivity", "Sensibilité au prix"))}: ${escapeHtml(priceSensitivity(service.elasticity))}</span><span>${escapeHtml(L("Money left after direct supplies", "Argent restant après les fournitures directes"))}: ${money(current * (1 - service.variableCost))} · ${escapeHtml(L(`supplies ${pct(service.variableCost)}`, `fournitures ${pct(service.variableCost)}`))}</span></div><label><span>${escapeHtml(L("Price", "Prix"))}</span><input type="number" min="1" max="5000" value="${current}" data-draft-price="${service.id}" data-draft-key="price:${service.id}"></label><button class="button primary" data-review-price="${service.id}">${escapeHtml(L("Review price", "Examiner le prix"))}</button></article>`; }).join("")}</div>`;
+    if (ui.drawer === "pricing") return `<p><strong>${escapeHtml(L("Your clients", "Vos clients"))}: ${escapeHtml(itemLabel(D.segments[planned.marketFocus].name))}</strong> — ${escapeHtml(L("the price they accept depends on the type of client and on their trust in the clinic.", "le prix qu’ils acceptent dépend du type de clients et de leur confiance dans la clinique."))}</p><details class="note-repliee"><summary>${escapeHtml(L("Price sensitivity", "Sensibilité au prix"))}</summary><p>${escapeHtml(L("Price sensitivity shows how strongly requests may change when the price changes. Only open services are listed: open a service first to price it.", "La sensibilité au prix indique dans quelle mesure les demandes peuvent changer lorsque le prix évolue. Seuls les services ouverts sont listés : ouvrez d’abord un service pour fixer son prix."))}</p></details><div class="price-editor">${D.services.filter((service) => planned.services[service.id].active).map((service) => { const current = ui.decisionDrafts[`price:${service.id}`] ?? planned.services[service.id].price; const accepte = acceptedPrice(service, planned); const known = acceptedKnown(service, planned, accepte); const au_dessus = Number(current) > known.high + .5; return `<article><div><strong>${escapeHtml(serviceName(service.id))}</strong><span class="${au_dessus ? "warn-text" : ""}">${escapeHtml(L("Price your clients accept", "Prix accepté par vos clients"))}: ${escapeHtml(acceptedText(known))}</span>${priceScale(Number(current), known)}<span>${escapeHtml(L("Price sensitivity", "Sensibilité au prix"))}: ${escapeHtml(priceSensitivity(service.elasticity))}</span><span>${escapeHtml(L("Money left after direct supplies", "Argent restant après les fournitures directes"))}: ${money(current - service.supplyCost)} · ${escapeHtml(L(`supplies ${money(service.supplyCost)} per case`, `fournitures ${money(service.supplyCost)} par cas`))}</span></div><label><span>${escapeHtml(L("Price", "Prix"))}</span><input type="number" min="1" max="5000" value="${current}" data-draft-price="${service.id}" data-draft-key="price:${service.id}"></label><button class="button primary" data-review-price="${service.id}">${escapeHtml(L("Review price", "Examiner le prix"))}</button></article>`; }).join("")}</div>`;
     if (ui.drawer === "finance") { const loan = planned.finance.loan; const rate = loanRate(state); const misses = bankMisses(state); const bankLine = `<p class="bank-standing ${misses ? "warn-text" : ""}"><strong>${escapeHtml(L("The bank", "La banque"))}</strong> : ${escapeHtml(misses === 0 ? L("promise kept last year", "promesse tenue l’an dernier") : L(`promise broken ${misses} year${misses > 1 ? "s" : ""} in a row`, `promesse non tenue ${misses} an${misses > 1 ? "s" : ""} de suite`))} — ${escapeHtml(rate === null ? L("no new loan", "aucun nouvel emprunt") : L(`loans at ${pct(rate)}`, `emprunt à ${pct(rate)}`))}.</p>`; if (!loan && rate === null) return bankLine; return bankLine + (loan ? `${optionCard(L("Repay loan early", "Rembourser l’emprunt par anticipation"), `${money(loan.remaining)} ${L("remaining principal", "de capital restant")}`, "finance:loan", { kind: "repay-loan" })}` : `<div class="drawer-cards"><article class="choice-card"><h3>${escapeHtml(L("Five-year loan", "Emprunt sur cinq ans"))}</h3><p>${escapeHtml(L(`${pct(rate)} a year on the remaining principal · one loan at a time`, `${pct(rate)} par an sur le capital restant · un emprunt à la fois`))}</p>${compareOptions([30000, 50000, 100000].map((amount) => ({ label: money(amount), key: "finance:loan", payload: { kind: "loan", value: amount }, button: L("Borrow", "Emprunter") })))}</article></div>`); }
     if (ui.drawer === "market") return `<div class="drawer-cards">${Object.entries(D.segments).map(([id, segment]) => choiceCard(id === planned.marketFocus, itemLabel(segment.name), segmentAppetite(segment), "market:focus", { kind: "market-focus", targetId: id })).join("")}</div>`;
     if (ui.drawer === "location") return `<div class="drawer-cards">${Object.entries(D.locations).map(([id, location]) => { const moving = id !== planned.location.sectorId; const note = moving && planned.location.parking ? ` ${L("Moving removes the current parking.", "Le déménagement supprime le parking actuel.")}` : ""; return choiceCard(id === planned.location.sectorId, itemLabel(location.name), itemLabel(location.description) + note, "location:sector", { kind: "location", targetId: id }, `${moving ? `${money(location.moveCost)} ${L("once to move", "une fois pour déménager")} · ` : ""}${money(location.rent)}/${L("year", "an")} · ${decimal(location.averageRoundTripKm, 0)} km ${L("average return trip", "aller-retour moyen")}`); }).join("")}${optionCard(planned.location.parking ? L("Remove parking", "Supprimer le parking") : L("Add parking", "Ajouter un parking"), L("Parking improves access and some demand, but increases the modelled share of car travel.", "Le parking améliore l’accès et une partie de la demande, mais augmente la part modélisée des déplacements en voiture."), "location:parking", { kind: "parking", value: !planned.location.parking }, planned.location.parking ? "" : `${money(D.locations[planned.location.sectorId].parkingCost)} ${L("once", "une fois")} · ${money(D.locations[planned.location.sectorId].parkingMaintenance)}/${L("year", "an")}`)}</div>`;
@@ -3293,7 +4425,7 @@
   }
 
   function drawerTitles() {
-    const titles = { relations: L("Team and clients", "Équipe et clients"), person: L("Team member", "Membre de l’équipe"), setup: L("Game setup", "Paramétrage de la partie"), plan: L("Current plan", "Plan actuel"), recruitment: L("Post a vacancy", "Publier une offre"), staffPerson: L("Manage pay", "Gérer le salaire"), staffExit: L("Let someone go", "Se séparer d’une personne"), staffAllocation: L("Change time allocation", "Modifier l’affectation du temps"), hoursByService: L("Hours by service", "Heures par service"), serviceLedger: L("What each service brings in", "Ce que rapporte chaque service"), export: L("Export report", "Exporter le rapport"), services: L("Explore services", "Explorer les services"), rooms: L("Manage rooms", "Gérer les salles"), equipment: L("Manage equipment", "Gérer l’équipement"), training: L("Plan training", "Planifier une formation"), capabilities: L("Who can do what", "Qui peut faire quoi"), opening: L("Opening schedule", "Horaires d’ouverture"), dropoff: L("Drop-off workflow", "Parcours de dépôt"), stock: L("Stock strategy", "Stratégie de stock"), hr: L("HR strategy", "Stratégie RH"), pricing: L("Service prices", "Prix des services"), finance: L("Financing", "Financement"), market: L("Market focus", "Marché cible"), location: L("Location and parking", "Implantation et parking"), marketing: L("Communication and market study", "Communication et étude de marché"), sustainability: L("Transition options", "Options de transition") };
+    const titles = { atelier: L("Teacher’s workshop", "Atelier de l’enseignant"), relations: L("Team and clients", "Équipe et clients"), person: L("Team member", "Membre de l’équipe"), setup: L("Game setup", "Paramétrage de la partie"), plan: L("Current plan", "Plan actuel"), recruitment: L("Post a vacancy", "Publier une offre"), staffPerson: L("Manage pay", "Gérer le salaire"), staffExit: L("Let someone go", "Se séparer d’une personne"), staffAllocation: L("Change time allocation", "Modifier l’affectation du temps"), hoursByService: L("Hours by service", "Heures par service"), serviceLedger: L("What each service brings in", "Ce que rapporte chaque service"), export: L("Export report", "Exporter le rapport"), services: L("Explore services", "Explorer les services"), rooms: L("Manage rooms", "Gérer les salles"), equipment: L("Manage equipment", "Gérer l’équipement"), training: L("Plan training", "Planifier une formation"), capabilities: L("Who can do what", "Qui peut faire quoi"), opening: L("Opening schedule", "Horaires d’ouverture"), dropoff: L("Drop-off workflow", "Parcours de dépôt"), stock: L("Stock strategy", "Stratégie de stock"), hr: L("HR strategy", "Stratégie RH"), pricing: L("Service prices", "Prix des services"), finance: L("Financing", "Financement"), market: L("Market focus", "Marché cible"), location: L("Location and parking", "Implantation et parking"), marketing: L("Communication and market study", "Communication et étude de marché"), sustainability: L("Transition options", "Options de transition") };
     return titles;
   }
 
@@ -3319,8 +4451,8 @@
     // stayed invisible for so long — and left an arithmetic the reader could not check.
     const allMoney = (entries) => entries.filter(([, value]) => Math.abs(value) >= .5).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
     const moneyItems = allMoney(p
-      ? [[L("Revenue", "Recettes"), f.revenue - p.revenue], [L("Payroll, charges and overtime", "Salaires, charges et heures supplémentaires"), -(staffCost(f) - staffCost(p))], [L("Facilities", "Installations"), -(f.facilityCosts - p.facilityCosts)], [L("Variable costs", "Coûts variables"), -(f.variableCosts - p.variableCosts)], [L("Operating costs", "Coûts d’exploitation"), -(operating(f) - operating(p))], [L("One-time costs", "Coûts ponctuels"), -(f.oneTimeCosts - p.oneTimeCosts)]]
-      : [[L("Revenue", "Recettes"), f.revenue], [L("Payroll, charges and overtime", "Salaires, charges et heures supplémentaires"), -staffCost(f)], [L("Facilities", "Installations"), -f.facilityCosts], [L("Variable costs", "Coûts variables"), -f.variableCosts], [L("Operating costs", "Coûts d’exploitation"), -operating(f)], [L("One-time costs", "Coûts ponctuels"), -f.oneTimeCosts]]
+      ? [[L("Revenue", "Recettes"), f.revenue - p.revenue], [L("Staff (salaries, charges, overtime)", "Personnel (salaires, charges, heures sup.)"), -(staffCost(f) - staffCost(p))], [L("Premises and equipment", "Locaux et équipement"), -(f.facilityCosts - p.facilityCosts)], [L("Variable costs", "Coûts variables"), -(f.variableCosts - p.variableCosts)], [L("Operating costs", "Coûts d’exploitation"), -(operating(f) - operating(p))], [L("One-time costs", "Coûts ponctuels"), -(f.oneTimeCosts - p.oneTimeCosts)]]
+      : [[L("Revenue", "Recettes"), f.revenue], [L("Staff (salaries, charges, overtime)", "Personnel (salaires, charges, heures sup.)"), -staffCost(f)], [L("Premises and equipment", "Locaux et équipement"), -f.facilityCosts], [L("Variable costs", "Coûts variables"), -f.variableCosts], [L("Operating costs", "Coûts d’exploitation"), -operating(f)], [L("One-time costs", "Coûts ponctuels"), -f.oneTimeCosts]]
     ).map(([label, value]) => [label, signed(value, "money"), value]);
     const caseItems = (p
       ? latest.serviceResults.map((row) => [row, row.honored - (previous.serviceResults.find((item) => item.id === row.id)?.honored || 0)]).filter(([, delta]) => delta).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
@@ -3364,13 +4496,15 @@
       { label: itemLabel(D.socialIndicators.referralSupport), value: number(latest.social.after.referralSupport), good: Math.round(latest.social.after.referralSupport) >= Math.round(latest.social.before.referralSupport), delta: signed(Math.round(latest.social.after.referralSupport) - Math.round(latest.social.before.referralSupport)) },
       { label: itemLabel(D.socialIndicators.communityPressure), value: number(latest.social.after.communityPressure), good: Math.round(latest.social.after.communityPressure) <= Math.round(latest.social.before.communityPressure), delta: signed(Math.round(latest.social.after.communityPressure) - Math.round(latest.social.before.communityPressure)) }
     ];
+    // The statement's names, so one quantity has one name across the game.
+    const f = latest.financial;
     const costDrivers = [
-      [L("Payroll and charges", "Salaires et charges"), latest.financial.payroll + latest.financial.socialCharges],
-      [L("Facilities", "Installations"), latest.financial.facilityCosts],
-      [L("Variable costs", "Coûts variables"), latest.financial.variableCosts],
-      [L("Operating costs", "Coûts d’exploitation"), latest.financial.openingCosts + latest.financial.dropoffCost + latest.financial.stockCost + latest.financial.hrCost + latest.financial.marketingCost + (latest.financial.sustainabilityCost || 0) + latest.financial.admin],
-      ...(latest.financial.loanInterest > 0 ? [[L("Loan interest", "Intérêts d’emprunt"), latest.financial.loanInterest]] : []),
-      [L("One-time costs", "Coûts ponctuels"), latest.financial.oneTimeCosts]
+      [L("Staff (salaries, charges, overtime)", "Personnel (salaires, charges, heures sup.)"), f.personnel ?? (f.payroll + f.socialCharges + (f.overtimeCost || 0))],
+      [L("Premises and equipment", "Locaux et équipement"), f.facilityCosts],
+      [L("Variable costs", "Coûts variables"), f.variableCosts],
+      [L("Other yearly costs", "Autres frais de l’année"), (f.chargesExternes ?? 0) - f.facilityCosts],
+      ...(f.loanInterest > 0 ? [[L("Interest", "Intérêts"), f.loanInterest]] : []),
+      [L("Paid once", "Dépenses ponctuelles"), f.depensesPonctuelles ?? f.oneTimeCosts]
     ].sort((a, b) => b[1] - a[1]);
     const mainCarbon = carbon?.primaryDrivers[0];
     // A verdict that only says "you were wrong" trains deference to the model, which is the habit
@@ -3438,13 +4572,19 @@
   }
 
   function render() {
+    applyModelRules(state.modelRules);
     ensureCarbonBaseline();
     t = I18N.createTranslator(state.language);
     document.documentElement.lang = state.language;
     document.title = t("app.title");
+    if (ui.atelierView && ui.atelierUnlocked) {
+      document.querySelector("#app").innerHTML = renderAtelierPage();
+      restoreAtelierScroll();
+      return;
+    }
     const planned = plannedState();
     const { baseline, forecast } = forecastPair();
-    document.querySelector("#app").innerHTML = `${renderHeader(planned)}${renderNav()}<div class="workspace"><main class="content">${renderDomain(planned, forecast)}</main>${renderPlanPanel(baseline, forecast)}</div>${renderHelp()}${renderEndModal()}${renderDrawer(planned, forecast)}${renderPassCheck(planned, forecast)}`;
+    document.querySelector("#app").innerHTML = `${renderHeader(planned)}${calendrierLigne()}${renderNav()}<div class="workspace"><main class="content">${renderDomain(planned, forecast)}</main>${renderPlanPanel(baseline, forecast)}</div>${renderHelp()}${renderEndModal()}${renderDrawer(planned, forecast)}${renderPassCheck(planned, forecast)}${state.domain === "business" ? renderGrand(planned, forecast) : ""}`;
     const drawer = document.querySelector(".drawer");
     if (drawer && ui.restore) {
       const restore = ui.restore;
@@ -3494,6 +4634,9 @@
       locale: locale(),
       scenario: { id: state.scenarioId, label: itemLabel(D.scenarios[state.scenarioId].name) },
       rules: clone(state.rules),
+      // The rules the game was played with: the original ones, or a teacher's changes, setting by setting.
+      calendrier: state.calendrier ? { ...state.calendrier, seances: state.calendrier.seances.map(({ code, ...x }) => ({ ...x, avecCode: Boolean(code) })), ouverts: state.calendrierOuverts || [] } : null,
+      modelRules: (() => { const c = cleanRules(state.modelRules); const r = rulesSummary(state.modelRules); return c ? { nom: c.nom || "", monnaie: c.monnaie ? c.monnaie.code : "EUR", regles: c, reglages: r.map(({ section, chemin, nom, origine, valeur, texteOrigine, texteValeur }) => ({ section, chemin: chemin || null, nom, origine: origine ?? texteOrigine, valeur: valeur ?? texteValeur })) } : { nom: "origine", monnaie: "EUR", reglages: [] }; })(),
       setup: clone(state.setup),
       setupLog: clone(state.setupLog || []),
       cashLog: clone(state.cashLog || []),
@@ -3635,7 +4778,7 @@
       add: L("Planned", "Planifiée"), revise: L("Changed", "Modifiée"), remove: L("Removed", "Retirée"),
       prediction: L("Prediction made", "Prévision faite"), "prediction-resolved": L("Prediction checked", "Prévision vérifiée"),
       pass: L("Year passed", "Année passée"), "undo-year": L("Year undone", "Année annulée"),
-      load: L("Saved clinic loaded", "Clinique enregistrée chargée"), sandbox: L("Play continued past the target year", "Partie poursuivie après l’année cible")
+      load: L("Saved clinic loaded", "Clinique enregistrée chargée"), rules: L("Model rules changed", "Règles du modèle changées"), sandbox: L("Play continued past the target year", "Partie poursuivie après l’année cible")
     })[event] || event;
   }
 
@@ -3693,7 +4836,7 @@
       return `<section class="year"><h2>${escapeHtml(L("Year", "Année"))} ${report.turn}</h2><div class="summary-grid"><p><span>${escapeHtml(L("Revenue", "Recettes"))}</span><strong>${money(report.financial.revenue)}</strong></p><p><span>${escapeHtml(L("Variable costs", "Coûts variables"))}</span><strong>${money(report.financial.variableCosts)}</strong></p><p><span>${escapeHtml(L("Payroll and charges", "Salaires et charges"))}</span><strong>${money((report.financial.payroll || 0) + (report.financial.socialCharges || 0))}</strong></p><p><span>${escapeHtml(L("Overtime", "Heures supplémentaires"))}</span><strong>${money(report.financial.overtimeCost || 0)}</strong></p><p><span>${escapeHtml(L("Facilities", "Installations"))}</span><strong>${money(report.financial.facilityCosts)}</strong></p><p><span>${escapeHtml(L("Operating costs", "Coûts d’exploitation"))}</span><strong>${money((report.financial.openingCosts || 0) + (report.financial.dropoffCost || 0) + (report.financial.stockCost || 0) + (report.financial.hrCost || 0) + (report.financial.marketingCost || 0) + (report.financial.sustainabilityCost || 0) + (report.financial.admin || 0))}</strong></p>${report.financial.loanInterest > 0 ? `<p><span>${escapeHtml(L("Loan interest", "Intérêts d’emprunt"))}</span><strong>${money(report.financial.loanInterest)}</strong></p>` : ""}<p><span>${escapeHtml(L("One-time costs", "Coûts ponctuels"))}</span><strong>${money(report.financial.oneTimeCosts)}</strong></p><p><span>${escapeHtml(L("Tax", "Impôt"))}</span><strong>${money(report.financial.tax)}</strong></p><p><span>${escapeHtml(L("Net result", "Résultat net"))}</span><strong>${money(report.financial.netResult)}</strong></p><p><span>${escapeHtml(L("End treasury", "Trésorerie finale"))}</span><strong>${money(report.financial.treasury)}</strong></p></div>${relations}${(report.commitments || []).length ? `<h3>${escapeHtml(L("Promises", "Engagements"))}</h3>${reportTable([L("Who", "Qui"), L("Kept", "Tenu"), L("What follows next year", "Ce qui suit l’an prochain")], report.commitments.map((c) => [escapeHtml(stakeholderLabel(c.id)), c.ok ? "✓" : "✗", escapeHtml(commitmentConsequence(c.id, c.ok, { ...state, history: state.history.filter((r) => r.turn < report.turn) }, report))]))}` : ""}<h3>${escapeHtml(L("Actions and recruitment", "Actions et recrutement"))}</h3>${actions}<h3>${escapeHtml(L("How the year was decided", "Comment l’année a été décidée"))}</h3><p>${escapeHtml(L("Year passed", "Année passée"))} : ${escapeHtml(heure(report.passedAt))}</p>${chronologie}${(report.recruitment || []).map((row) => `<p>${escapeHtml(candidateById(row.candidateId)?.name || row.candidateId)} — ${escapeHtml(row.accepted ? L("accepted", "accepté") : L("refused", "refusé"))}</p>`).join("")}<h3>${escapeHtml(L("Services", "Services"))}</h3>${services}<h3>${escapeHtml(L("Staff hours", "Heures du personnel"))}</h3>${hasHourTotals ? `<p>${escapeHtml(L("Veterinary hours available / used", "Heures vétérinaires disponibles / utilisées"))}: ${number(report.operational.startVetHours)} / ${number(report.operational.startVetHours - report.operational.remainingVetHours)} · ${escapeHtml(L("Support hours available / used", "Heures de soutien disponibles / utilisées"))}: ${number(report.operational.startSupportHours)} / ${number(report.operational.startSupportHours - report.operational.remainingSupportHours)}</p>` : `<p class="notice">${escapeHtml(L("Detailed hour totals were not recorded for this migrated year.", "Les totaux d’heures détaillés n’ont pas été enregistrés pour cette année migrée."))}</p>`}${staffTable}${hours}<h3>${escapeHtml(L("People and clients", "Équipe et clients"))}</h3><p>${escapeHtml(L("Staff climate", "Climat de l’équipe"))}: ${number(report.social?.after?.staffClimate || 0)} · ${escapeHtml(L("Client trust", "Confiance des clients"))}: ${number(report.social?.after?.clientTrust || 0)}</p><h3>${escapeHtml(L("Carbon footprint", "Empreinte carbone"))}</h3>${carbon}${carbonChange === null ? "" : `<p><strong>${escapeHtml(L("Annual change", "Évolution annuelle"))}:</strong> ${carbonChange > 0 ? "+" : ""}${tonnes(carbonChange)}</p>`}</section>`;
     }).join("");
     const archiveSection = (state.runArchive || []).length ? `<section class="year"><h2>${escapeHtml(L("Reloaded runs", "Essais rechargés"))}</h2><p>${escapeHtml(L("Each run below was replaced when a saved clinic was loaded. They are kept so that a run without a decision can be compared with the run that took it.", "Chaque essai ci-dessous a été remplacé au chargement d’une clinique enregistrée. Ils sont gardés pour comparer un essai sans une décision à l’essai qui l’a prise."))}</p>${state.runArchive.map((essai, index) => `<h3>${escapeHtml(L("Run", "Essai"))} ${index + 1} · ${escapeHtml(L("replaced at year", "remplacé à l’année"))} ${essai.yearReached}</h3>${reportTable([L("Year", "Année"), L("Net result", "Résultat net"), L("Treasury", "Trésorerie"), L("Cases served", "Cas traités"), L("Main constraint", "Contrainte principale"), L("Actions", "Actions")], essai.years.map((row) => [String(row.year), money(row.netResult), money(row.treasury), number(row.served), escapeHtml(blockerText(row.constraintId)), escapeHtml((row.actionLabels || []).join(" · ") || L("No action", "Aucune action"))]))}`).join("")}</section>` : "";
-    return `<!doctype html><html lang="${state.language}"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,sans-serif;color:#17201d;margin:32px;line-height:1.4}header{border-bottom:3px solid #146c5a;margin-bottom:24px}.print{position:fixed;right:24px;top:18px;padding:10px 16px}.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.summary-grid p{border:1px solid #ccd8d4;padding:10px;margin:0}.summary-grid span{display:block;font-size:12px}.summary-grid strong{font-size:16px}table{width:100%;border-collapse:collapse;margin:10px 0 20px;font-size:12px}th,td{text-align:left;border:1px solid #ccd8d4;padding:7px;vertical-align:top}th{background:#eef5f2}.year{break-before:page}.notice{font-style:italic}@media(max-width:700px){.summary-grid{grid-template-columns:1fr}table{font-size:10px}}@media print{body{margin:10mm}.print{display:none}.year:first-of-type{break-before:auto}}</style></head><body><button class="print" onclick="window.print()">${escapeHtml(L("Print / Save as PDF", "Imprimer / Enregistrer en PDF"))}</button><header><h1>${escapeHtml(title)}</h1><p><strong>${escapeHtml(L("Scenario", "Scénario"))}:</strong> ${escapeHtml(itemLabel(D.scenarios[state.scenarioId].name))}<br><strong>${escapeHtml(L("Team code", "Code d’équipe"))}:</strong> ${escapeHtml(teamCode)}<br><strong>${escapeHtml(L("Exported", "Exporté"))}:</strong> ${escapeHtml(new Intl.DateTimeFormat(locale(), { dateStyle: "long", timeStyle: "short" }).format(new Date()))}</p></header><section><h2>${escapeHtml(L("Rules and goals", "Règles et objectifs"))}</h2><p>${escapeHtml(L("Action limit", "Limite d’actions"))}: ${escapeHtml(state.rules.unlimited ? L("Unlimited", "Illimitée") : state.rules.actionLimit)} · ${escapeHtml(L("Target year", "Année cible"))}: ${state.rules.targetYear} · ${escapeHtml(L("Bankruptcy threshold", "Seuil de faillite"))}: ${money(state.rules.bankruptcyThreshold)}</p><ul>${goals.map((goal) => `<li>${goal.ok ? "✓" : "○"} ${escapeHtml(itemLabel(goal.label))}: ${escapeHtml(goal.display)}</li>`).join("")}</ul><h2>${escapeHtml(L("Game setup", "Paramétrage de la partie"))}</h2>${reportTable([L("Setting", "Paramètre"), L("Value", "Valeur")], setupSummaryRows().map(([label, value]) => [escapeHtml(label), escapeHtml(value)]))}${setupLines.length ? `<ul>${setupLines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : `<p>${escapeHtml(L("No setting changes or cash adjustments.", "Aucun changement de paramètre ni ajustement de trésorerie."))}</p>`}<h2>${escapeHtml(L("Starting versus current clinic", "Clinique de départ et actuelle"))}</h2>${reportTable([L("Measure", "Mesure"), L("Starting", "Départ"), L("Current", "Actuel")], [[escapeHtml(L("Treasury", "Trésorerie")), money(start.treasury), money(state.treasury)], [escapeHtml(L("Clients", "Clients")), number(start.clients), number(state.clients)], [escapeHtml(L("Staff", "Personnel")), number(start.staff.length), number(state.staff.length)], [escapeHtml(L("Active services", "Services actifs")), number(Object.values(start.services).filter((service) => service.active).length), number(Object.values(state.services).filter((service) => service.active).length)], [escapeHtml(L("Carbon footprint", "Empreinte carbone")), state.carbonBaseline ? tonnes(state.carbonBaseline.total) : "—", state.history.at(-1)?.carbon ? tonnes(state.history.at(-1).carbon.total) : "—"]])}</section>${yearSections || `<p>${escapeHtml(L("No completed year yet.", "Aucune année terminée."))}</p>`}${archiveSection}<footer><p>${escapeHtml(L("Carbon method", "Méthode carbone"))}: ${escapeHtml(D.carbonModel.version)}. ${escapeHtml(L("Boundary: building electricity and heating, anaesthetic gases, waste treatment, and client car travel. Service activity values are simulation assumptions.", "Périmètre : électricité et chauffage du bâtiment, gaz anesthésiques, traitement des déchets et déplacements automobiles des clients. Les valeurs d’activité des services sont des hypothèses de simulation."))}</p></footer></body></html>`;
+    return `<!doctype html><html lang="${state.language}"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,sans-serif;color:#17201d;margin:32px;line-height:1.4}header{border-bottom:3px solid #146c5a;margin-bottom:24px}.print{position:fixed;right:24px;top:18px;padding:10px 16px}.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.summary-grid p{border:1px solid #ccd8d4;padding:10px;margin:0}.summary-grid span{display:block;font-size:12px}.summary-grid strong{font-size:16px}table{width:100%;border-collapse:collapse;margin:10px 0 20px;font-size:12px}th,td{text-align:left;border:1px solid #ccd8d4;padding:7px;vertical-align:top}th{background:#eef5f2}.year{break-before:page}.notice{font-style:italic}@media(max-width:700px){.summary-grid{grid-template-columns:1fr}table{font-size:10px}}@media print{body{margin:10mm}.print{display:none}.year:first-of-type{break-before:auto}}</style></head><body><button class="print" onclick="window.print()">${escapeHtml(L("Print / Save as PDF", "Imprimer / Enregistrer en PDF"))}</button><header><h1>${escapeHtml(title)}</h1><p><strong>${escapeHtml(L("Scenario", "Scénario"))}:</strong> ${escapeHtml(itemLabel(D.scenarios[state.scenarioId].name))}<br><strong>${escapeHtml(L("Team code", "Code d’équipe"))}:</strong> ${escapeHtml(teamCode)}<br><strong>${escapeHtml(L("Exported", "Exporté"))}:</strong> ${escapeHtml(new Intl.DateTimeFormat(locale(), { dateStyle: "long", timeStyle: "short" }).format(new Date()))}</p></header>${(() => { const r = rulesSummary(state.modelRules); return `<section><h2>${escapeHtml(L("Rules of the model", "Règles du modèle"))}</h2>${r.length ? `<p>${escapeHtml(L(`Played with changed rules: « ${state.modelRules.nom || "untitled"} ».`, `Partie jouée avec des règles modifiées : « ${state.modelRules.nom || "sans nom"} ».`))}</p>${reportTable([L("Section", "Section"), L("Setting", "Réglage"), L("Original", "Origine"), L("Used", "Utilisé")], r.map((x) => [escapeHtml(itemLabel((ATELIER_SECTIONS.find(([id]) => id === x.section) || [, { en: x.section, fr: x.section }])[1])), escapeHtml(x.nom), escapeHtml(x.texteOrigine), escapeHtml(x.texteValeur)]))}` : `<p>${escapeHtml(L("Played with the original rules.", "Partie jouée avec les règles d’origine."))}</p>`}</section>`; })()}<section><h2>${escapeHtml(L("Rules and goals", "Règles et objectifs"))}</h2><p>${escapeHtml(L("Action limit", "Limite d’actions"))}: ${escapeHtml(state.rules.unlimited ? L("Unlimited", "Illimitée") : state.rules.actionLimit)} · ${escapeHtml(L("Target year", "Année cible"))}: ${state.rules.targetYear} · ${escapeHtml(L("Bankruptcy threshold", "Seuil de faillite"))}: ${money(state.rules.bankruptcyThreshold)}</p><ul>${goals.map((goal) => `<li>${goal.ok ? "✓" : "○"} ${escapeHtml(itemLabel(goal.label))}: ${escapeHtml(goal.display)}</li>`).join("")}</ul><h2>${escapeHtml(L("Game setup", "Paramétrage de la partie"))}</h2>${reportTable([L("Setting", "Paramètre"), L("Value", "Valeur")], setupSummaryRows().map(([label, value]) => [escapeHtml(label), escapeHtml(value)]))}${setupLines.length ? `<ul>${setupLines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : `<p>${escapeHtml(L("No setting changes or cash adjustments.", "Aucun changement de paramètre ni ajustement de trésorerie."))}</p>`}<h2>${escapeHtml(L("Starting versus current clinic", "Clinique de départ et actuelle"))}</h2>${reportTable([L("Measure", "Mesure"), L("Starting", "Départ"), L("Current", "Actuel")], [[escapeHtml(L("Treasury", "Trésorerie")), money(start.treasury), money(state.treasury)], [escapeHtml(L("Clients", "Clients")), number(start.clients), number(state.clients)], [escapeHtml(L("Staff", "Personnel")), number(start.staff.length), number(state.staff.length)], [escapeHtml(L("Active services", "Services actifs")), number(Object.values(start.services).filter((service) => service.active).length), number(Object.values(state.services).filter((service) => service.active).length)], [escapeHtml(L("Carbon footprint", "Empreinte carbone")), state.carbonBaseline ? tonnes(state.carbonBaseline.total) : "—", state.history.at(-1)?.carbon ? tonnes(state.history.at(-1).carbon.total) : "—"]])}</section>${yearSections || `<p>${escapeHtml(L("No completed year yet.", "Aucune année terminée."))}</p>`}${archiveSection}<footer><p>${escapeHtml(L("Carbon method", "Méthode carbone"))}: ${escapeHtml(D.carbonModel.version)}. ${escapeHtml(L("Boundary: building electricity and heating, anaesthetic gases, waste treatment, and client car travel. Service activity values are simulation assumptions.", "Périmètre : électricité et chauffage du bâtiment, gaz anesthésiques, traitement des déchets et déplacements automobiles des clients. Les valeurs d’activité des services sont des hypothèses de simulation."))}</p></footer></body></html>`;
   }
 
   function printReport() {
@@ -3772,8 +4915,79 @@
       closeDrawer();
       return;
     }
+    // The large window closes on its backdrop or its ×, not on a click inside it.
+    if (event.target.matches?.(".grand-fond") || event.target.closest?.(".grand-fermer")) { ui.grand = null; render(); return; }
+    // A year on the evolution graphs is an SVG column, not a button.
+    const annee = event.target.closest?.("[data-evo-annee]");
+    if (annee) { const v = Number(annee.dataset.evoAnnee); ui.evoAnnee = annee.dataset.evoAnnee && v !== ui.evoAnnee ? v : null; render(); return; }
     const button = event.target.closest("button");
     if (!button) return;
+    if (button.dataset.gestionTab) { ui.gestionTab = button.dataset.gestionTab; state.domain = "business"; ui.drawer = null; ui.drawerContext = null; render(); window.scrollTo?.(0, 0); return; }
+    if (button.dataset.evoGroupe) { ui.evoGroupe = button.dataset.evoGroupe; render(); return; }
+    if (button.dataset.grand) { ui.grand = button.dataset.grand; render(); document.querySelector(".grand-fermer")?.focus(); return; }
+    if (button.dataset.copier) {
+      const texte = enTSV(tableauCopie(button.dataset.copier));
+      const ok = () => toast(L("Table copied: paste it into a spreadsheet.", "Tableau copié : collez-le dans un tableur."), "good");
+      if (navigator.clipboard?.writeText) navigator.clipboard.writeText(texte).then(ok, () => toast(L("The browser refused to copy. Use « Download (CSV) ».", "Le navigateur a refusé la copie. Utilisez « Télécharger (CSV) »."), "warn"));
+      return;
+    }
+    if (button.dataset.csv) {
+      const blob = new Blob(["\ufeff" + enCSV(tableauCopie(button.dataset.csv))], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${L("clinic-years", "clinique-annees")}-${state.playerTeam?.teamCode || state.scenarioId}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
+    if (button.dataset.atelierOpen !== undefined) {
+      const champ = document.querySelector("[data-atelier-code]");
+      if (atelierFingerprint(champ?.value) !== D.atelierCodeHash) { toast(L("That code does not open the workshop.", "Ce code n’ouvre pas l’atelier."), "warn"); return; }
+      ui.atelierUnlocked = true; ui.rulesDraft = null; ui.atelierView = true; ui.atelierSection = "regles"; ui.drawer = null;
+      render();
+      return;
+    }
+    if (button.dataset.atelierShow !== undefined && ui.atelierUnlocked) { ui.rulesDraft = null; ui.atelierView = true; ui.drawer = null; render(); return; }
+    if (button.dataset.atelierClose !== undefined) { ui.atelierView = false; render(); return; }
+    if (button.dataset.atelierSection !== undefined) { ui.atelierSection = button.dataset.atelierSection; ui.atelierSearch = ""; render(); return; }
+    if (button.dataset.ruleReset !== undefined && ui.rulesDraft) { delete ui.rulesDraft.valeurs[button.dataset.ruleReset]; keepAtelierScroll(); render(); return; }
+    if (button.dataset.rulesResetAll !== undefined && ui.rulesDraft) { ui.rulesDraft = { nom: ui.rulesDraft.nom, valeurs: {}, noms: {}, delies: {}, monnaie: null, calendrier: ui.rulesDraft.calendrier }; keepAtelierScroll(); render(); return; }
+    if (button.dataset.rulesDownload !== undefined) { telechargerRegles(); return; }
+    if (button.dataset.ruleConvert !== undefined && ui.rulesDraft) {
+      const facteur = ui.rulesDraft.monnaie?.facteur ?? 1;
+      Object.values(RULE_SETTINGS).filter((def) => def.money).forEach((def) => {
+        const v = RULE_DEFAULTS[def.chemin] * facteur;
+        const arrondi = Math.abs(v) >= 1000 ? Math.round(v / 10) * 10 : Math.round(v);
+        if (Math.abs(arrondi - RULE_DEFAULTS[def.chemin]) > 1e-9) ui.rulesDraft.valeurs[def.chemin] = Math.min(def.max, Math.max(def.min, arrondi)); else delete ui.rulesDraft.valeurs[def.chemin];
+      });
+      keepAtelierScroll(); render();
+      toast(L(`Every amount converted (×${decimal(facteur, 2)}).`, `Tous les montants convertis (×${decimal(facteur, 2)}).`), "good");
+      return;
+    }
+    if (ui.rulesDraft?.calendrier && (button.dataset.calAjouter !== undefined || button.dataset.calRetirer !== undefined || button.dataset.calCode !== undefined || button.dataset.calSanscode !== undefined)) {
+      const cal = ui.rulesDraft.calendrier;
+      if (button.dataset.calAjouter !== undefined) {
+        const derniere = Math.max(0, ...cal.seances.flatMap((x) => x.annees || []));
+        cal.seances.push({ nom: L(`Session ${cal.seances.length + 1}`, `Séance ${cal.seances.length + 1}`), annees: derniere < 12 ? [derniere + 1] : [], types: {}, quotas: {}, ouvre: [] });
+      } else if (button.dataset.calRetirer !== undefined) cal.seances.splice(Number(button.dataset.calRetirer), 1);
+      else if (button.dataset.calCode !== undefined) {
+        const i = Number(button.dataset.calCode), code = nouveauCodeSeance();
+        cal.seances[i].code = atelierFingerprint(code);
+        ui.calCodesMontres = { ...(ui.calCodesMontres || {}), [i]: code };
+      } else if (button.dataset.calSanscode !== undefined) { const i = Number(button.dataset.calSanscode); delete cal.seances[i].code; if (ui.calCodesMontres) delete ui.calCodesMontres[i]; }
+      keepAtelierScroll(); render(); return;
+    }
+    if (button.dataset.rulesApply !== undefined && ui.rulesDraft) {
+      const cal = appliquerCalendrier(ui.rulesDraft.calendrier, "apply");
+      if (!cal.ok) { ui.atelierSection = "calendrier"; render(); toast(L("The calendar has errors: fix them first.", "Le calendrier a des erreurs : corrigez-les d’abord."), "warn"); return; }
+      const clean = appliquerRegles(ui.rulesDraft, "apply");
+      keepAtelierScroll();
+      render();
+      const calendrierTexte = state.calendrier ? L(` Calendar: ${nomSeance(state.calendrier)}.`, ` Calendrier : ${nomSeance(state.calendrier)}.`) : "";
+      toast((clean ? L(`Rules applied to your game: ${rulesSummary(clean).length} changes.`, `Règles appliquées à votre partie : ${rulesSummary(clean).length} changements.`) : L("Original rules of the model.", "Règles d’origine du modèle.")) + calendrierTexte, "good");
+      return;
+    }
     if (button.dataset.domain) { saveState(); state.domain = button.dataset.domain; ui.drawer = null; ui.drawerContext = null; ui.selectedServiceId = null; ui.confirm = null; ui.originStack = []; saveState(); render(); return; }
     if (button.dataset.openDrawer) {
       // On a drawer-to-drawer jump the breadcrumb IS the close button, so it must name where
@@ -3899,18 +5113,19 @@
       const limit = unlimited ? state.rules.actionLimit : Number(draft.actionLimit);
       const targetYear = Number(draft.targetYear);
       const threshold = Number(draft.bankruptcyThreshold);
+      const expansionFrom = clamp(Math.round(Number(draft.expansionFrom ?? state.rules.expansionFrom ?? 1)) || 1, 1, 12);
       const startingTreasury = Number(draft.startingTreasury ?? state.setup.startingTreasury);
       const forecastMode = ["exact", "ranges", "costs"].includes(draft.forecastPrecision) ? draft.forecastPrecision : state.setup.forecastPrecision;
       const classCode = String(draft.classCode ?? state.setup.classCode ?? "").trim().slice(0, 24);
       const studyGroup = String(draft.studyGroup ?? state.setup.studyGroup ?? "").trim().slice(0, 24);
       if (!unlimited && limit < pendingActions().length) ui.settingsError = L(`The limit cannot be below the ${pendingActions().length} actions already planned.`, `La limite ne peut pas être inférieure aux ${pendingActions().length} actions déjà planifiées.`);
       else if (!Number.isInteger(targetYear) || targetYear < state.year || targetYear > 12) ui.settingsError = L(`Choose a target year from Year ${state.year} to Year 12.`, `Choisissez une année cible entre l’année ${state.year} et l’année 12.`);
-      else if (!Number.isFinite(threshold) || threshold < -1000000 || threshold > 0) ui.settingsError = L("Choose a bankruptcy threshold between −€1,000,000 and €0.", "Choisissez un seuil de faillite entre −1 000 000 € et 0 €.");
-      else if (!state.history.length && (!Number.isFinite(startingTreasury) || startingTreasury < 0 || startingTreasury > 2000000)) ui.settingsError = L("Choose a starting treasury between €0 and €2,000,000.", "Choisissez une trésorerie de départ entre 0 € et 2 000 000 €.");
+      else if (!Number.isFinite(threshold) || threshold < -1000000 || threshold > 0) ui.settingsError = L(`Choose a bankruptcy threshold between ${money(-1000000)} and ${money(0)}.`, `Choisissez un seuil de faillite entre ${money(-1000000)} et ${money(0)}.`);
+      else if (!state.history.length && (!Number.isFinite(startingTreasury) || startingTreasury < 0 || startingTreasury > 2000000)) ui.settingsError = L(`Choose a starting treasury between ${money(0)} and ${money(2000000)}.`, `Choisissez une trésorerie de départ entre ${money(0)} et ${money(2000000)}.`);
       else {
-        const snapshot = () => ({ actionLimit: state.rules.unlimited ? "unlimited" : state.rules.actionLimit, targetYear: state.rules.targetYear, bankruptcyThreshold: state.rules.bankruptcyThreshold, startingTreasury: state.setup.startingTreasury, forecastPrecision: state.setup.forecastPrecision, classCode: state.setup.classCode || "", studyGroup: state.setup.studyGroup || "" });
+        const snapshot = () => ({ expansionFrom: state.rules.expansionFrom || 1, actionLimit: state.rules.unlimited ? "unlimited" : state.rules.actionLimit, targetYear: state.rules.targetYear, bankruptcyThreshold: state.rules.bankruptcyThreshold, startingTreasury: state.setup.startingTreasury, forecastPrecision: state.setup.forecastPrecision, classCode: state.setup.classCode || "", studyGroup: state.setup.studyGroup || "" });
         const previous = snapshot();
-        state.rules = { ...state.rules, unlimited, actionLimit: clamp(limit, 1, 12), targetYear, bankruptcyThreshold: threshold };
+        state.rules = { ...state.rules, unlimited, actionLimit: clamp(limit, 1, 12), targetYear, bankruptcyThreshold: threshold, expansionFrom };
         // Starting cash can only change before Year 1 is played; cash already adjusted is kept.
         if (!state.history.length && startingTreasury !== state.setup.startingTreasury) {
           state.treasury += startingTreasury - state.setup.startingTreasury;
@@ -3953,7 +5168,8 @@
       const offered = Number(document.querySelector("[data-draft-salary]")?.value || 0);
       const body = document.querySelector(".drawer-body");
       ui.returnFocus = { scrollTop: body?.scrollTop || 0, selector: `[data-review-salary="${CSS.escape(button.dataset.reviewSalary)}"]` };
-      ui.confirm = { key: `salary:${button.dataset.reviewSalary}`, payload: { kind: "salary", targetId: button.dataset.reviewSalary, value: offered } };
+      const gerant = state.staff.find((p) => p.id === button.dataset.reviewSalary)?.gerant;
+      ui.confirm = { key: `${gerant ? "manager-pay" : "salary"}:${button.dataset.reviewSalary}`, payload: { kind: gerant ? "manager-pay" : "salary", targetId: button.dataset.reviewSalary, value: offered } };
       pushConfirmStep();
       render();
       return;
@@ -3972,6 +5188,18 @@
     if (button.dataset.help !== undefined) { state.helpOpen = true; saveState(); render(); return; }
     if (button.dataset.closeHelp !== undefined) { state.helpOpen = false; saveState(); render(); return; }
     if (button.dataset.removeAction) { rememberDrawer(`[data-add-key="${CSS.escape(button.dataset.removeAction)}"]`); removeAction(button.dataset.removeAction); return; }
+    if (button.dataset.dividendAdd !== undefined) {
+      const montant = Math.max(0, Math.round(Number(document.querySelector("[data-dividend-input]")?.value) || 0));
+      if (montant > 0) queueAction("dividend", { kind: "dividend", value: montant });
+      else if (state.pending.dividend) { delete state.pending.dividend; logDecision("remove", "dividend"); saveState(); render(); }
+      return;
+    }
+    if (button.dataset.calendrierOuvrir !== undefined) {
+      const champ = document.querySelector("[data-calendrier-code]");
+      if (ouvrirSeance(champ?.value)) { toast(L("Session open.", "Séance ouverte."), "good"); render(); }
+      else toast(L("That code does not open this session.", "Ce code n’ouvre pas cette séance."), "warn");
+      return;
+    }
     if (button.dataset.passYear !== undefined) { saveState(); ui.drawer = null; ui.confirm = null; ui.passCheck = true; render(); return; }
     if (button.dataset.export !== undefined) { saveState(); ui.lastFocus = { drawer: "export", context: "" }; ui.drawer = "export"; ui.drawerContext = null; ui.confirm = null; ui.autoFocusDrawer = true; render(); return; }
     if (button.dataset.sauverClinique !== undefined) { sauvegarderClinique(); return; }
@@ -4011,6 +5239,59 @@
 
   document.addEventListener("change", (event) => {
     const input = event.target;
+    if (input.dataset.servicesAnnee !== undefined) { ui.servicesAnnee = input.value; render(); return; }
+    if (input.dataset.evoComparer !== undefined) {
+      const id = input.dataset.evoComparer;
+      ui.evoComparer = input.checked ? [...(ui.evoComparer || []).filter((x) => x !== id), id].slice(-3) : (ui.evoComparer || []).filter((x) => x !== id);
+      render();
+      return;
+    }
+    if (ui.rulesDraft && (input.dataset.calPreset !== undefined || input.dataset.calTitre !== undefined || input.dataset.calNom !== undefined || input.dataset.calAnnees !== undefined || input.dataset.calType !== undefined || input.dataset.calQuota !== undefined || input.dataset.calFamille !== undefined)) {
+      const cal = ui.rulesDraft.calendrier;
+      if (input.dataset.calPreset !== undefined) {
+        if (input.value === "aucun") ui.rulesDraft.calendrier = null;
+        else if (D.calendrierPresets[input.value]) ui.rulesDraft.calendrier = clone(D.calendrierPresets[input.value]);
+        ui.calCodesMontres = {};
+      } else if (cal) {
+        const [i, n] = String(input.dataset.calNom ?? input.dataset.calAnnees ?? input.dataset.calType ?? input.dataset.calQuota ?? input.dataset.calFamille ?? "").split(":");
+        const seance = cal.seances[Number(i)];
+        if (input.dataset.calTitre !== undefined) cal.nom = input.value.trim().slice(0, 40) || cal.nom;
+        else if (!seance) return;
+        else if (input.dataset.calNom !== undefined) seance.nom = input.value.trim().slice(0, 40) || seance.nom;
+        else if (input.dataset.calAnnees !== undefined) seance.annees = lireAnnees(input.value);
+        else if (input.dataset.calType !== undefined) { seance.types = { ...(seance.types || {}) }; if (input.value === "guidee") seance.types[n] = "guidee"; else delete seance.types[n]; }
+        else if (input.dataset.calQuota !== undefined) { seance.quotas = { ...(seance.quotas || {}) }; if (input.value === "") delete seance.quotas[n]; else seance.quotas[n] = Number(input.value); }
+        else if (input.dataset.calFamille !== undefined) { const set = new Set(seance.ouvre || []); if (input.checked) set.add(n); else set.delete(n); seance.ouvre = [...set]; }
+      }
+      keepAtelierScroll(); render(); return;
+    }
+    if (input.dataset.ruleCell !== undefined && ui.rulesDraft) {
+      const def = RULE_SETTINGS[input.dataset.ruleCell];
+      const v = def ? ruleTaken(def, input.value) : null;
+      if (v == null) { toast(L("Type a number.", "Tapez un nombre."), "warn"); render(); return; }
+      if (Math.abs(v - RULE_DEFAULTS[def.chemin]) < 1e-9) delete ui.rulesDraft.valeurs[def.chemin]; else ui.rulesDraft.valeurs[def.chemin] = Math.min(def.max, Math.max(def.min, v));
+      keepAtelierScroll(); render(); return;
+    }
+    if (input.dataset.ruleLink !== undefined && ui.rulesDraft) { if (input.checked) delete ui.rulesDraft.delies[input.dataset.ruleLink]; else ui.rulesDraft.delies[input.dataset.ruleLink] = true; keepAtelierScroll(); render(); return; }
+    if (input.dataset.ruleCurrency !== undefined && ui.rulesDraft) { ui.rulesDraft.monnaie = { code: input.value, facteur: ui.rulesDraft.monnaie?.facteur ?? 1 }; keepAtelierScroll(); render(); return; }
+    if (input.dataset.ruleFactor !== undefined && ui.rulesDraft) { const f = Number(String(input.value).replace(",", ".")); ui.rulesDraft.monnaie = { code: ui.rulesDraft.monnaie?.code || "EUR", facteur: Number.isFinite(f) && f > 0 ? Math.min(5, Math.max(.2, f)) : 1 }; keepAtelierScroll(); render(); return; }
+    if ((input.dataset.nameFr !== undefined || input.dataset.nameEn !== undefined || input.dataset.nameSingle !== undefined) && ui.rulesDraft) {
+      const chemin = input.dataset.nameFr ?? input.dataset.nameEn ?? input.dataset.nameSingle;
+      const origine = NAME_DEFAULTS[chemin];
+      if (input.dataset.nameSingle !== undefined) ui.rulesDraft.noms[chemin] = input.value;
+      else { const cur = ui.rulesDraft.noms[chemin] || { ...origine }; ui.rulesDraft.noms[chemin] = { ...cur, [input.dataset.nameFr !== undefined ? "fr" : "en"]: input.value }; }
+      keepAtelierScroll(); render(); return;
+    }
+    if (input.dataset.chargerRegles !== undefined) {
+      const fichier = input.files && input.files[0];
+      if (!fichier) return;
+      const lecteur = new FileReader();
+      lecteur.onload = () => { chargerRegles(String(lecteur.result)); };
+      lecteur.onerror = () => { toast(L("That file could not be read.", "Ce fichier n’a pas pu être lu."), "warn"); };
+      lecteur.readAsText(fichier);
+      input.value = "";
+      return;
+    }
     if (input.dataset.chargerClinique !== undefined) {
       const fichier = input.files && input.files[0];
       if (!fichier) return;
@@ -4021,7 +5302,6 @@
       input.value = "";
       return;
     }
-    if (input.dataset.prediction !== undefined) { ui.predictionDraft = input.value || null; return; }
     if (input.dataset.vacancyRole !== undefined) {
       const allowed = input.value === "vet" ? ["general", "ultrasound", "dentistry", "orthopedics"] : ["preventive", "surgery", "lab", "imaging", "emergency", "inpatient", "pharmacy", "animalCare"];
       ui.vacancy = { ...ui.vacancy, role: input.value, skills: ui.vacancy.skills.filter((skill) => allowed.includes(skill)) };
@@ -4065,6 +5345,10 @@
       return;
     }
     if (input.dataset.settingsField) { ui.settingsDraft = { ...(ui.settingsDraft || {}), [input.dataset.settingsField]: input.value }; return; }
+    if (input.dataset.rule !== undefined && ui.rulesDraft) { ui.rulesDraft.valeurs[input.dataset.rule] = Number(input.value); keepAtelierScroll(`[data-rule="${input.dataset.rule}"]`); render(); return; }
+    if (input.dataset.atelierSearch !== undefined) { ui.atelierSearch = input.value; keepAtelierScroll("[data-atelier-search]", input.value.length); render(); return; }
+    if (input.dataset.ruleName !== undefined && ui.rulesDraft) { ui.rulesDraft.nom = input.value; return; }
+    if (input.dataset.ruleComptes !== undefined && ui.rulesDraft) { ui.rulesDraft.comptes = input.value === "detailles" ? "detailles" : null; render(); return; }
     if (input.dataset.draftKey) { ui.decisionDrafts[input.dataset.draftKey] = input.value; return; }
     if (input.dataset.vacancyBudget !== undefined) { ui.vacancy.budget = Number(input.value || 0); return; }
     if (input.dataset.reflection && input.dataset.year) {
@@ -4092,7 +5376,8 @@
 
   document.addEventListener("keydown", (event) => {
     if (ui.passCheck && event.key === "Escape") { event.preventDefault(); ui.passCheck = false; render(); return; }
-    const drawer = document.querySelector(".drawer");
+    if (ui.grand && event.key === "Escape") { event.preventDefault(); const retour = ui.grand; ui.grand = null; render(); document.querySelector(`[data-grand="${retour}"]`)?.focus(); return; }
+    const drawer = document.querySelector(ui.grand ? ".modal.grand" : ".drawer");
     if (!drawer) return;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -4108,7 +5393,7 @@
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
-  globalThis.ClinicTest = { refusalSplit, initialState, hydrate, sauvegarderClinique, chargerClinique, casesCarried, countedActions, isFreeAction, predictionOptions, constraintKey, constraintBreakdown, planFrames, adjustCash, parseRoute, routeFor, applyRoute, openDrawer, closeDrawer, planRowLabel, planRows, applyAction, simulateYear, simulatePlan, queueAction, removeAction, resolveTurn, undoYear, resetScenario, pendingActions, forecastRecord, calculateCarbon, missingRequirements, requirementList, projectedDemand, actionLabel, goalChecks, getBeginnerSignals, emptyEffects, combineEffects, clone, validAllocations, allocationRemainder, allocationCeiling, snapShareToHours, stepShare, shareFromHours, availableHoursFor, assignedTone, workloadTone, stockServices: STOCK_SERVICES, buildExportPayload, buildPrintableReportHtml, data: D, getState: () => clone(state), renderState: (next) => { state = hydrate(next); ui.selectedServiceId = null; ui.settingsDraft = null; render(); return document.querySelector("#app").innerHTML; }, renderUiForTest: (changes) => { ui = { ...ui, ...changes }; render(); return document.querySelector("#app").innerHTML; } };
+  globalThis.ClinicTest = { indicateurs, anneesTSV, servicesTSV, tableauCopie, enTSV, dividendeAutorise, reservesDistribuables, compteAssocies, cleanCalendrier, appliquerCalendrier, ouvrirSeance, calendarLock, actionLimit, quotaCalendrier, atelierPaths: () => ({ valeurs: Object.keys(RULE_SETTINGS), noms: Object.keys(RULE_NAMES) }), ruleSettings: () => RULE_SETTINGS, chargerRegles, cleanRules, atelierFingerprint, rulesSummary, refusalSplit, initialState, hydrate, sauvegarderClinique, chargerClinique, casesCarried, countedActions, isFreeAction, predictionOptions, constraintKey, constraintBreakdown, planFrames, adjustCash, parseRoute, routeFor, applyRoute, openDrawer, closeDrawer, planRowLabel, planRows, applyAction, simulateYear, simulatePlan, queueAction, removeAction, resolveTurn, undoYear, resetScenario, pendingActions, forecastRecord, calculateCarbon, missingRequirements, requirementList, projectedDemand, actionLabel, goalChecks, getBeginnerSignals, emptyEffects, combineEffects, clone, validAllocations, allocationRemainder, allocationCeiling, snapShareToHours, stepShare, shareFromHours, availableHoursFor, assignedTone, workloadTone, stockServices: STOCK_SERVICES, buildExportPayload, buildPrintableReportHtml, data: D, getState: () => clone(state), renderState: (next) => { state = hydrate(next); ui.selectedServiceId = null; ui.settingsDraft = null; render(); return document.querySelector("#app").innerHTML; }, renderUiForTest: (changes) => { ui = { ...ui, ...changes }; render(); return document.querySelector("#app").innerHTML; } };
   if (typeof location !== "undefined" && location.hash) applyRoute(parseRoute(location.hash));
   render();
 })();
